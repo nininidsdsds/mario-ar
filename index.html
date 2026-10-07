@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mario AR - Prueba de cámara</title>
+  <style>
+    body { margin: 0; background: #111; color: #fff; font-family: sans-serif; text-align: center; }
+    video { width: 100%; max-height: 80vh; object-fit: cover; }
+    button { font-size: 20px; padding: 14px 28px; margin: 16px; }
+    #msg { padding: 8px; }
+  </style>
+</head>
+<body>
+  <button id="btn">Activar cámara</button>
+  <div id="msg"></div>
+  <video id="video" autoplay playsinline muted></video>
+
+  <script>
+    const video = document.getElementById('video');
+    const msg = document.getElementById('msg');
+
+    document.getElementById('btn').addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+        });
+        video.srcObject = stream;
+        const s = stream.getVideoTracks()[0].getSettings();
+        msg.textContent = 'Cámara OK: ' + s.width + 'x' + s.height;
+      } catch (e) {
+        msg.textContent = 'Error: ' + e.message;
+      }
+    });
+  </script>
+</body>
+</html>
