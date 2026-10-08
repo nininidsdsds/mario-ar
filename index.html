@@ -3,24 +3,50 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mario AR - Detección de bloques</title>
+  <title>Mario AR - Calibración y cuadrícula</title>
   <style>
     html, body { margin: 0; background: #111; color: #fff; font-family: sans-serif; }
     #top { padding: 8px; text-align: center; }
-    button { font-size: 18px; padding: 12px 24px; }
-    #hud { font-size: 14px; padding: 4px 8px; text-align: center; min-height: 20px; }
-    canvas { width: 100%; display: block; }
-    #video { display: none; }
+    button { font-size: 16px; padding: 10px 16px; border-radius: 8px; border: 2px solid #555; background: #222; color: #fff; margin: 3px; }
+    #hud { font-size: 13px; padding: 4px 8px; text-align: center; min-height: 18px; }
+    canvas { width: 100%; display: block; touch-action: manipulation; }
+    #controls { padding: 6px 8px 24px; font-size: 14px; }
+    .row { margin: 6px 0; text-align: center; }
+    #calHelp { color: #bbb; font-size: 13px; line-height: 1.4; }
+    input[type=number] { width: 70px; font-size: 16px; padding: 4px; }
+    #msgBox { color: #ffd60a; }
   </style>
 </head>
 <body>
   <div id="top"><button id="btn">Activar cámara</button></div>
   <div id="hud">Cargando librería…</div>
-  <video id="video" autoplay playsinline muted></video>
   <canvas id="canvas"></canvas>
 
+  <div id="controls" hidden>
+    <div class="row">
+      <button id="calBtn">Calibrar: NO</button>
+      <label><input type="checkbox" id="gridChk" checked> Cuadrícula</label>
+    </div>
+    <div class="row" id="palette" hidden></div>
+    <div class="row" id="calHelp" hidden>
+      1) Elige un tipo arriba. 2) Toca en la pantalla un bloque de ese tipo (mejor varios, de distintos lugares).<br>
+      Para "Fondo", toca varias zonas distintas del pizarrón donde NO haya bloques.<br>
+      Los bloques se cuentan entre paréntesis. Con 3-5 toques por tipo suele bastar.
+    </div>
+    <div class="row">
+      <label>Tamaño real del marcador de inicio (cm):
+        <input id="mcm" type="number" step="0.05" min="0.8" max="10" value="1.8">
+      </label>
+    </div>
+    <div class="row"><button id="clearBtn" hidden>Borrar calibración</button></div>
+  </div>
+
+  <video id="video" autoplay playsinline muted style="display:none"></video>
+
   <script src="markers-config.js"></script>
+  <script src="game-core.js"></script>
   <script>
+    // ---------- Carga de la librería ArUco ----------
     function loadScript(urls) {
       return new Promise((resolve, reject) => {
         let i = 0;
@@ -35,26 +61,299 @@
         next();
       });
     }
-
     const BASES = [
       'https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/',
       'https://unpkg.com/js-aruco2@2.0.0/src/'
     ];
 
+    // ---------- Estado ----------
+    const UNIT = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+    const MAX_W = 960;          // ancho máximo de análisis
+    const MAX_DIST = 40;        // distancia de color máxima para aceptar una clasificación
+    const MAX_PER_CLASS = 40;   // muestras máximas por tipo
+    const STORE_KEY = 'marioar_calib_v1';
+
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const hud = document.getElementById('hud');
-    const MAX_W = 960;           // se analiza a este ancho máximo para ir fluido
+
+    const state = {
+      calibrating: false, showGrid: true, activeClass: 'solid',
+      samples: [], markerCm: 1.8,
+      H: null, Hinv: null, lastAnchorT: 0,
+      lastImg: null, votes: new Map(), grid: new Map(),
+      flash: null, msg: null
+    };
     let detector = null;
     let lastT = performance.now(), fps = 0;
 
+    // ---------- Guardado en el navegador ----------
+    function saveCalib() {
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ samples: state.samples, markerCm: state.markerCm })); } catch (e) {}
+    }
+    function loadCalib() {
+      try {
+        const raw = localStorage.getItem(STORE_KEY);
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (Array.isArray(d.samples)) {
+          state.samples = d.samples.filter(s => CLASSES[s.cls] && Array.isArray(s.lab) && s.lab.length === 3);
+        }
+        if (typeof d.markerCm === 'number' && d.markerCm >= 0.8 && d.markerCm <= 10) state.markerCm = d.markerCm;
+      } catch (e) {}
+    }
+
+    function say(text) { state.msg = { text: text, t: performance.now() }; }
+    const kCells = () => BLOCK_CM / state.markerCm;
+    const anchorOk = () => state.H && (performance.now() - state.lastAnchorT) < 600;
+
+    // ---------- Paleta de calibración ----------
+    function refreshPalette() {
+      document.querySelectorAll('#palette button').forEach(b => {
+        const cls = b.dataset.cls;
+        const n = state.samples.filter(s => s.cls === cls).length;
+        const active = cls === state.activeClass;
+        b.textContent = CLASSES[cls].label + ' (' + n + ')';
+        b.style.borderColor = CLASSES[cls].color;
+        b.style.background = active ? CLASSES[cls].color : '#222';
+        b.style.color = active ? '#000' : '#fff';
+      });
+    }
+    function buildPalette() {
+      const pal = document.getElementById('palette');
+      pal.innerHTML = '';
+      Object.keys(CLASSES).forEach(cls => {
+        const b = document.createElement('button');
+        b.dataset.cls = cls;
+        b.onclick = () => { state.activeClass = cls; refreshPalette(); };
+        pal.appendChild(b);
+      });
+      refreshPalette();
+    }
+
+    // ---------- Geometría del ancla ----------
+    function anchorCorners(m) {
+      let c = m.corners.slice();
+      for (let i = 0; i < CORNER_SHIFT; i++) c.push(c.shift());
+      // mismo sentido (horario en pantalla) que el cuadrado unitario
+      const cross = (c[1].x - c[0].x) * (c[3].y - c[0].y) - (c[1].y - c[0].y) * (c[3].x - c[0].x);
+      if (cross < 0) c = [c[0], c[3], c[2], c[1]];
+      return c;
+    }
+    function centerOf(corners) {
+      const c = { x: 0, y: 0 };
+      corners.forEach(p => { c.x += p.x / 4; c.y += p.y / 4; });
+      return c;
+    }
+
+    // ---------- Clasificación con voto en el tiempo ----------
+    function vote(key, raw) {
+      let v = state.votes.get(key);
+      if (!v) { v = {}; state.votes.set(key, v); }
+      for (const c in v) v[c] *= 0.6;
+      v[raw] = (v[raw] || 0) + 1;
+      let best = raw, bestV = -1;
+      for (const c in v) if (v[c] > bestV) { bestV = v[c]; best = c; }
+      return best;
+    }
+
+    function processGrid(img, w, h, markers) {
+      const H = state.H, k = kCells();
+      state.grid = new Map();
+      const p0 = Core.applyH(H, 0.5, 0.5), p1 = Core.applyH(H, 0.5 + k, 0.5);
+      const px = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      if (!(px > 6 && px < 400)) return;   // escala absurda: no dibujar nada
+      const useColor = state.samples.length > 0;
+      for (let cy = -40; cy <= 40; cy++) {
+        for (let cx = -40; cx <= 40; cx++) {
+          const c = Core.applyH(H, 0.5 + cx * k, 0.5 + cy * k);
+          if (!(c.x > 6 && c.x < w - 6 && c.y > 6 && c.y < h - 6)) continue;
+          const key = cx + ',' + cy;
+          let cls = 'empty';
+          if (cx === 0 && cy === 0) {
+            cls = 'start';
+          } else if (useColor) {
+            const rgb = Core.meanColor(img.data, w, h, Core.cellSamplePoints(H, cx, cy, k, 0.5));
+            if (!rgb) continue;   // casilla a medio salir de la imagen: se ignora
+            const lab = Core.rgbToLab(rgb[0], rgb[1], rgb[2]);
+            cls = vote(key, Core.classify(lab, state.samples, MAX_DIST).cls || 'empty');
+          }
+          state.grid.set(key, cls);
+        }
+      }
+      // Enemigos y meta que llevan marcador
+      markers.forEach(m => {
+        if (m.id !== GOAL_ID && !ENEMY_IDS.includes(m.id)) return;
+        const c = centerOf(m.corners);
+        const cell = Core.pointToCell(state.Hinv, c.x, c.y, k);
+        state.grid.set(cell.cx + ',' + cell.cy, m.id === GOAL_ID ? 'goal' : 'hazard');
+      });
+    }
+
+    // ---------- Dibujo ----------
+    function tracePoly(pts) {
+      ctx.beginPath();
+      pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.closePath();
+    }
+
+    function drawGrid() {
+      const H = state.H, k = kCells();
+      state.grid.forEach((cls, key) => {
+        const parts = key.split(',');
+        const pts = Core.cellCorners(H, +parts[0], +parts[1], k);
+        tracePoly(pts);
+        if (cls === 'empty') {
+          if (state.showGrid) {
+            ctx.globalAlpha = 0.25; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;
+          }
+          return;
+        }
+        const color = cls === 'start' ? '#34c759' : cls === 'goal' ? '#bf5af2' : CLASSES[cls].color;
+        ctx.globalAlpha = 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+      });
+      // Flecha "abajo del pizarrón" desde el bloque de inicio
+      const a = Core.applyH(H, 0.5, 0.5 + 0.5 * k), b = Core.applyH(H, 0.5, 0.5 + 1.7 * k);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      ctx.strokeStyle = '#34c759'; ctx.fillStyle = '#34c759'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(b.x - 10 * Math.cos(ang - 0.5), b.y - 10 * Math.sin(ang - 0.5));
+      ctx.lineTo(b.x - 10 * Math.cos(ang + 0.5), b.y - 10 * Math.sin(ang + 0.5));
+      ctx.closePath(); ctx.fill();
+    }
+
+    function drawMarkers(markers) {
+      markers.forEach(m => {
+        const isEnemy = ENEMY_IDS.includes(m.id);
+        const color = isEnemy ? '#ff3b30' : (m.id === START_ID ? '#34c759' : '#ffd60a');
+        ctx.lineWidth = 2; ctx.strokeStyle = color;
+        tracePoly(m.corners); ctx.stroke();
+        const c = centerOf(m.corners);
+        ctx.fillStyle = color; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(BLOCKS[m.id] || ('ID ' + m.id), c.x, c.y - 20);
+      });
+    }
+
+    function drawFlash() {
+      if (!state.flash) return;
+      const age = performance.now() - state.flash.t;
+      if (age > 500) { state.flash = null; return; }
+      ctx.globalAlpha = 1 - age / 500;
+      ctx.strokeStyle = state.flash.color; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(state.flash.x, state.flash.y, 10 + age / 20, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    function updateHud(markers, w, h) {
+      const now = performance.now();
+      let t = (state.msg && now - state.msg.t < 2500) ? state.msg.text + ' · ' : '';
+      t += anchorOk() ? 'Inicio ✓' : 'Busca el bloque de inicio (ID ' + START_ID + ')';
+      if (!state.samples.length) t += ' · sin calibrar: pulsa "Calibrar"';
+      else t += ' · muestras: ' + state.samples.length;
+      t += ' · casillas: ' + state.grid.size + ' · ' + fps.toFixed(0) + ' fps';
+      hud.textContent = t;
+    }
+
+    // ---------- Bucle principal ----------
+    function loop() {
+      if (video.readyState >= 2) {
+        const scale = Math.min(1, MAX_W / video.videoWidth);
+        const w = Math.round(video.videoWidth * scale);
+        const h = Math.round(video.videoHeight * scale);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        ctx.drawImage(video, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        state.lastImg = img;
+
+        const markers = detector ? detector.detect(img) : [];
+        const anchor = markers.find(m => m.id === START_ID);
+        const now = performance.now();
+        if (anchor) {
+          const H = Core.homography(UNIT, anchorCorners(anchor));
+          const Hinv = H && Core.invert3(H);
+          if (H && Hinv) { state.H = H; state.Hinv = Hinv; state.lastAnchorT = now; }
+        }
+        if (anchorOk()) { processGrid(img, w, h, markers); drawGrid(); }
+        else state.grid = new Map();
+        drawMarkers(markers);
+        drawFlash();
+
+        fps = fps * 0.9 + (1000 / Math.max(1, now - lastT)) * 0.1;
+        lastT = now;
+        updateHud(markers, w, h);
+      }
+      requestAnimationFrame(loop);
+    }
+
+    // ---------- Calibrar tocando la pantalla ----------
+    canvas.addEventListener('pointerdown', ev => {
+      if (!state.calibrating) return;
+      if (!anchorOk() || !state.lastImg) { say('Primero enfoca el bloque de inicio'); return; }
+      const r = canvas.getBoundingClientRect();
+      const x = (ev.clientX - r.left) * canvas.width / r.width;
+      const y = (ev.clientY - r.top) * canvas.height / r.height;
+      const k = kCells();
+      const cell = Core.pointToCell(state.Hinv, x, y, k);
+      if (cell.cx === 0 && cell.cy === 0) { say('Ese es el bloque de inicio: toca otro'); return; }
+      const rgb = Core.meanColor(state.lastImg.data, canvas.width, canvas.height,
+        Core.cellSamplePoints(state.H, cell.cx, cell.cy, k, 0.5));
+      if (!rgb) { say('Ese bloque queda muy al borde'); return; }
+      const cls = state.activeClass;
+      state.samples.push({ cls: cls, lab: Core.rgbToLab(rgb[0], rgb[1], rgb[2]) });
+      // tope por tipo: se descartan las más antiguas
+      let count = state.samples.filter(s => s.cls === cls).length;
+      for (let i = 0; i < state.samples.length && count > MAX_PER_CLASS; i++) {
+        if (state.samples[i].cls === cls) { state.samples.splice(i, 1); i--; count--; }
+      }
+      state.votes.clear();
+      saveCalib();
+      refreshPalette();
+      state.flash = { x: x, y: y, t: performance.now(), color: CLASSES[cls].color };
+      say('Guardado: ' + CLASSES[cls].label);
+    });
+
+    // ---------- Botones ----------
+    document.getElementById('calBtn').onclick = () => {
+      state.calibrating = !state.calibrating;
+      document.getElementById('calBtn').textContent = 'Calibrar: ' + (state.calibrating ? 'SÍ' : 'NO');
+      document.getElementById('palette').hidden = !state.calibrating;
+      document.getElementById('calHelp').hidden = !state.calibrating;
+      document.getElementById('clearBtn').hidden = !state.calibrating;
+    };
+    document.getElementById('gridChk').onchange = e => { state.showGrid = e.target.checked; };
+    document.getElementById('clearBtn').onclick = () => {
+      state.samples = []; state.votes.clear(); saveCalib(); refreshPalette(); say('Calibración borrada');
+    };
+    document.getElementById('mcm').oninput = e => {
+      const v = parseFloat(e.target.value);
+      if (v >= 0.8 && v <= 10) { state.markerCm = v; state.votes.clear(); saveCalib(); }
+    };
+
+    document.getElementById('btn').addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+        });
+        video.srcObject = stream;
+        await video.play();
+        document.getElementById('btn').style.display = 'none';
+        document.getElementById('controls').hidden = false;
+        loop();
+      } catch (e) {
+        hud.innerHTML = '<b style="color:#f66">Error cámara:</b> ' + (e && e.message ? e.message : String(e));
+      }
+    });
+
+    // ---------- Inicio ----------
     async function initLib() {
       try {
         await loadScript(BASES.map(b => b + 'cv.js'));
         await loadScript(BASES.map(b => b + 'aruco.js'));
         if (typeof AR === 'undefined') throw new Error('La librería cargó pero no existe "AR".');
-        // El diccionario 4x4 va en un archivo aparte y se carga DESPUÉS de aruco.js
         await loadScript(BASES.map(b => b + 'dictionaries/aruco_4x4_1000.js'));
         const names = Object.keys(AR.DICTIONARIES || {});
         if (!names.includes(DICTIONARY_NAME)) {
@@ -68,65 +367,9 @@
       }
     }
 
-    function centerOf(corners) {
-      const c = { x: 0, y: 0 };
-      corners.forEach(p => { c.x += p.x / 4; c.y += p.y / 4; });
-      return c;
-    }
-
-    function drawMarkers(markers) {
-      markers.forEach(m => {
-        const isEnemy = ENEMY_IDS.includes(m.id);
-        const color = isEnemy ? '#ff3b30' : (m.id === 0 ? '#34c759' : '#ffd60a');
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = color;
-        ctx.beginPath();
-        m.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
-        ctx.closePath();
-        ctx.stroke();
-        const c = centerOf(m.corners);
-        ctx.fillStyle = color;
-        ctx.font = 'bold 16px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText((BLOCKS[m.id] || 'ID ' + m.id), c.x, c.y - 22);
-      });
-    }
-
-    function loop() {
-      if (video.readyState >= 2) {
-        const scale = Math.min(1, MAX_W / video.videoWidth);
-        const w = Math.round(video.videoWidth * scale);
-        const h = Math.round(video.videoHeight * scale);
-        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-        ctx.drawImage(video, 0, 0, w, h);
-        if (detector) {
-          const img = ctx.getImageData(0, 0, w, h);
-          const markers = detector.detect(img);
-          drawMarkers(markers);
-          const now = performance.now();
-          fps = fps * 0.9 + (1000 / (now - lastT)) * 0.1;
-          lastT = now;
-          const ids = markers.map(m => m.id).sort((a, b) => a - b).join(', ') || 'ninguno';
-          hud.textContent = 'Marcadores: ' + markers.length + ' (IDs: ' + ids + ') · ' + fps.toFixed(0) + ' fps · ' + w + 'x' + h;
-        }
-      }
-      requestAnimationFrame(loop);
-    }
-
-    document.getElementById('btn').addEventListener('click', async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
-        });
-        video.srcObject = stream;
-        await video.play();
-        document.getElementById('btn').style.display = 'none';
-        loop();
-      } catch (e) {
-        hud.innerHTML = '<b style="color:#f66">Error cámara:</b> ' + e.message;
-      }
-    });
-
+    loadCalib();
+    document.getElementById('mcm').value = state.markerCm;
+    buildPalette();
     initLib();
   </script>
 </body>
