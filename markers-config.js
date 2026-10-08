@@ -6,7 +6,7 @@ const DICTIONARY_NAME = 'ARUCO_4X4_1000';
 
 // Solo estos bloques llevan marcador (para no tapar el diseño de los demás).
 // Los bloques normales se reconocen por color (ver calibración en index.html).
-const START_ID = 0;   // bloque de inicio: es el "ancla" que define la cuadrícula
+const START_ID = 0;   // bloque de inicio: es el "ancla" que define el sistema de coordenadas
 const GOAL_ID = 1;    // meta
 const BLOCKS = {
   0: 'Inicio (personaje)',
@@ -18,12 +18,16 @@ const BLOCKS = {
 // Enemigos con marcador: matan al contacto.
 const ENEMY_IDS = [4, 5];
 
-// Tamaño real de una casilla (tus cubos).
-const BLOCK_CM = 2;
+// Tamaños reales (cm). Los bloques normales pueden medir lo que quieras (2, 2.3, 2.5...):
+// el mapa se hace en píxeles finos, no en casillas fijas.
+const START_BLOCK_CM = 2;   // lado del bloque de inicio
+const ENEMY_CM = 2;         // tamaño que ocupa un enemigo/meta con marcador
+const FINE_CM = 0.25;       // resolución del mapa (cm por píxel fino)
+const BOARD_HALF_CM = 60;   // el mapa cubre ±60 cm alrededor del bloque de inicio
 
-// Tipos de casilla que la cámara aprende por color.
+// Tipos de bloque que la cámara aprende por color.
 const CLASSES = {
-  solid:    { label: 'Sólido',   color: '#ff9f0a' },  // ladrillos, madera, tierra
+  solid:    { label: 'Sólido',   color: '#ff9f0a' },  // ladrillos, madera, tierra, tubos
   cloud:    { label: 'Nube',     color: '#64d2ff' },
   question: { label: 'Bloque ?', color: '#ffd60a' },
   hazard:   { label: 'Peligro',  color: '#ff453a' },  // bolas de fuego, enemigos
