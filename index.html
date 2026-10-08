@@ -239,6 +239,25 @@
       });
     }
 
+    // Aviso grande arriba de la imagen: dice qué falta para que funcione
+    function drawBanner(w) {
+      let text = null;
+      if (!anchorOk()) text = 'Apunta al bloque de inicio (marcador ID ' + START_ID + ')';
+      else if (!state.samples.length) text = 'SIN CALIBRAR: elige un tipo abajo y toca un bloque de ese tipo';
+      if (!text) return;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(0, 0, w, 34);
+      ctx.fillStyle = '#ffd60a'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(text, w / 2, 22);
+    }
+
+    // Cuántos bloques de cada tipo ve la app ahora (sirve para saber si la calibración funciona)
+    function classCounts() {
+      const n = {};
+      state.rects.forEach(r => { if (r.cls < CLASS_KEYS.length && r.cls !== EMPTY_IDX) n[r.cls] = (n[r.cls] || 0) + 1; });
+      return Object.keys(n).map(i => CLASSES[CLASS_KEYS[i]].label + ' ' + n[i]).join(', ') || 'ninguno';
+    }
+
     function drawFlash() {
       if (!state.flash) return;
       const age = performance.now() - state.flash.t;
@@ -255,7 +274,7 @@
       t += anchorOk() ? 'Inicio ✓' : 'Busca el bloque de inicio (ID ' + START_ID + ')';
       if (!state.samples.length) t += ' · sin calibrar: pulsa "Calibrar"';
       else t += ' · muestras: ' + state.samples.length;
-      t += ' · bloques: ' + state.rects.length + ' · ' + fps.toFixed(0) + ' fps';
+      t += ' · detectado: ' + classCounts() + ' · ' + fps.toFixed(0) + ' fps';
       hud.textContent = t;
     }
 
@@ -285,6 +304,7 @@
         }
         drawMarkers(markers);
         drawFlash();
+        drawBanner(w);
 
         fps = fps * 0.9 + (1000 / Math.max(1, now - lastT)) * 0.1;
         lastT = now;
@@ -323,13 +343,14 @@
     });
 
     // ---------- Botones ----------
-    document.getElementById('calBtn').onclick = () => {
-      state.calibrating = !state.calibrating;
-      document.getElementById('calBtn').textContent = 'Calibrar: ' + (state.calibrating ? 'SÍ' : 'NO');
-      document.getElementById('palette').hidden = !state.calibrating;
-      document.getElementById('calHelp').hidden = !state.calibrating;
-      document.getElementById('clearBtn').hidden = !state.calibrating;
-    };
+    function setCalibrating(on) {
+      state.calibrating = on;
+      document.getElementById('calBtn').textContent = 'Calibrar: ' + (on ? 'SÍ' : 'NO');
+      document.getElementById('palette').hidden = !on;
+      document.getElementById('calHelp').hidden = !on;
+      document.getElementById('clearBtn').hidden = !on;
+    }
+    document.getElementById('calBtn').onclick = () => setCalibrating(!state.calibrating);
     document.getElementById('mapChk').onchange = e => { state.showMap = e.target.checked; };
     document.getElementById('rulerChk').onchange = e => { state.showRuler = e.target.checked; };
     document.getElementById('clearBtn').onclick = () => {
@@ -350,6 +371,7 @@
         await video.play();
         document.getElementById('btn').style.display = 'none';
         document.getElementById('controls').hidden = false;
+        if (!state.samples.length) setCalibrating(true);   // primera vez: entra directo a calibrar
         loop();
       } catch (e) {
         hud.innerHTML = '<b style="color:#f66">Error cámara:</b> ' + (e && e.message ? e.message : String(e));
