@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mario AR - Calibración y cuadrícula</title>
+  <title>Mario AR - Calibración y mapa</title>
   <style>
     html, body { margin: 0; background: #111; color: #fff; font-family: sans-serif; }
     #top { padding: 8px; text-align: center; }
@@ -14,7 +14,6 @@
     .row { margin: 6px 0; text-align: center; }
     #calHelp { color: #bbb; font-size: 13px; line-height: 1.4; }
     input[type=number] { width: 70px; font-size: 16px; padding: 4px; }
-    #msgBox { color: #ffd60a; }
   </style>
 </head>
 <body>
@@ -25,13 +24,15 @@
   <div id="controls" hidden>
     <div class="row">
       <button id="calBtn">Calibrar: NO</button>
-      <label><input type="checkbox" id="gridChk" checked> Cuadrícula</label>
+      <label><input type="checkbox" id="mapChk" checked> Mapa</label>
+      <label><input type="checkbox" id="rulerChk"> Regla (1 cm)</label>
     </div>
     <div class="row" id="palette" hidden></div>
     <div class="row" id="calHelp" hidden>
-      1) Elige un tipo arriba. 2) Toca en la pantalla un bloque de ese tipo (mejor varios, de distintos lugares).<br>
-      Para "Fondo", toca varias zonas distintas del pizarrón donde NO haya bloques.<br>
-      Los bloques se cuentan entre paréntesis. Con 3-5 toques por tipo suele bastar.
+      1) Elige un tipo arriba. 2) Toca en la pantalla el CENTRO de un bloque de ese tipo.<br>
+      Hazlo con cada color distinto: por ejemplo, ladrillo café, gris, madera, tierra y tubo van todos en "Sólido".<br>
+      Para "Fondo", toca varias zonas del pizarrón donde NO haya bloques (cielo, pasto, etc.).<br>
+      Los toques de cada tipo se cuentan entre paréntesis. Con 2-3 por color suele bastar.
     </div>
     <div class="row">
       <label>Tamaño real del marcador de inicio (cm):
@@ -66,12 +67,17 @@
       'https://unpkg.com/js-aruco2@2.0.0/src/'
     ];
 
-    // ---------- Estado ----------
+    // ---------- Constantes y estado ----------
     const UNIT = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
-    const MAX_W = 960;          // ancho máximo de análisis
-    const MAX_DIST = 40;        // distancia de color máxima para aceptar una clasificación
-    const MAX_PER_CLASS = 40;   // muestras máximas por tipo
-    const STORE_KEY = 'marioar_calib_v1';
+    const MAX_W = 960;           // ancho máximo de análisis
+    const MAX_DIST = 40;         // distancia de color máxima para aceptar una clasificación
+    const MAX_PER_CLASS = 40;    // muestras máximas por tipo
+    const UPDATE_EVERY = 2;      // el mapa se actualiza cada N cuadros
+    const STORE_KEY = 'marioar_calib_v2';
+    const CLASS_KEYS = Object.keys(CLASSES);
+    const CLASS_INDEX = {};
+    CLASS_KEYS.forEach((k, i) => { CLASS_INDEX[k] = i; });
+    const EMPTY_IDX = CLASS_INDEX.empty;
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -79,14 +85,17 @@
     const hud = document.getElementById('hud');
 
     const state = {
-      calibrating: false, showGrid: true, activeClass: 'solid',
+      calibrating: false, showMap: true, showRuler: false, activeClass: 'solid',
       samples: [], markerCm: 1.8,
       H: null, Hinv: null, lastAnchorT: 0,
-      lastImg: null, votes: new Map(), grid: new Map(),
+      lastImg: null, board: null, lut: null, lutDirty: true,
+      rects: [], specials: new Map(), frame: 0,
       flash: null, msg: null
     };
     let detector = null;
     let lastT = performance.now(), fps = 0;
+
+    function newBoard() { state.board = Core.createBoard(BOARD_HALF_CM, FINE_CM, CLASS_KEYS.length, EMPTY_IDX); state.rects = []; }
 
     // ---------- Guardado en el navegador ----------
     function saveCalib() {
@@ -105,7 +114,6 @@
     }
 
     function say(text) { state.msg = { text: text, t: performance.now() }; }
-    const kCells = () => BLOCK_CM / state.markerCm;
     const anchorOk = () => state.H && (performance.now() - state.lastAnchorT) < 600;
 
     // ---------- Paleta de calibración ----------
@@ -123,7 +131,7 @@
     function buildPalette() {
       const pal = document.getElementById('palette');
       pal.innerHTML = '';
-      Object.keys(CLASSES).forEach(cls => {
+      CLASS_KEYS.forEach(cls => {
         const b = document.createElement('button');
         b.dataset.cls = cls;
         b.onclick = () => { state.activeClass = cls; refreshPalette(); };
@@ -147,48 +155,24 @@
       return c;
     }
 
-    // ---------- Clasificación con voto en el tiempo ----------
-    function vote(key, raw) {
-      let v = state.votes.get(key);
-      if (!v) { v = {}; state.votes.set(key, v); }
-      for (const c in v) v[c] *= 0.6;
-      v[raw] = (v[raw] || 0) + 1;
-      let best = raw, bestV = -1;
-      for (const c in v) if (v[c] > bestV) { bestV = v[c]; best = c; }
-      return best;
-    }
-
-    function processGrid(img, w, h, markers) {
-      const H = state.H, k = kCells();
-      state.grid = new Map();
-      const p0 = Core.applyH(H, 0.5, 0.5), p1 = Core.applyH(H, 0.5 + k, 0.5);
-      const px = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-      if (!(px > 6 && px < 400)) return;   // escala absurda: no dibujar nada
-      const useColor = state.samples.length > 0;
-      for (let cy = -40; cy <= 40; cy++) {
-        for (let cx = -40; cx <= 40; cx++) {
-          const c = Core.applyH(H, 0.5 + cx * k, 0.5 + cy * k);
-          if (!(c.x > 6 && c.x < w - 6 && c.y > 6 && c.y < h - 6)) continue;
-          const key = cx + ',' + cy;
-          let cls = 'empty';
-          if (cx === 0 && cy === 0) {
-            cls = 'start';
-          } else if (useColor) {
-            const rgb = Core.meanColor(img.data, w, h, Core.cellSamplePoints(H, cx, cy, k, 0.5));
-            if (!rgb) continue;   // casilla a medio salir de la imagen: se ignora
-            const lab = Core.rgbToLab(rgb[0], rgb[1], rgb[2]);
-            cls = vote(key, Core.classify(lab, state.samples, MAX_DIST).cls || 'empty');
-          }
-          state.grid.set(key, cls);
-        }
-      }
-      // Enemigos y meta que llevan marcador
+    // ---------- Actualizar el mapa ----------
+    function updateStep(img, w, h, markers) {
+      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST); state.lutDirty = false; }
+      Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.markerCm, state.lut, { decay: 0.6, fillMin: 6 });
+      const now = performance.now();
+      // Meta y enemigos con marcador: se recuerdan 1.5 s aunque el marcador parpadee
       markers.forEach(m => {
         if (m.id !== GOAL_ID && !ENEMY_IDS.includes(m.id)) return;
         const c = centerOf(m.corners);
-        const cell = Core.pointToCell(state.Hinv, c.x, c.y, k);
-        state.grid.set(cell.cx + ',' + cell.cy, m.id === GOAL_ID ? 'goal' : 'hazard');
+        const p = Core.imageToBoard(state.Hinv, state.markerCm, c.x, c.y);
+        state.specials.set(m.id, { x: p.x, y: p.y, t: now });
       });
+      Core.stampRect(state.board, 0, 0, START_BLOCK_CM, START_BLOCK_CM, Core.START);
+      state.specials.forEach((s, id) => {
+        if (now - s.t > 1500) return;
+        Core.stampRect(state.board, s.x, s.y, ENEMY_CM, ENEMY_CM, id === GOAL_ID ? Core.GOAL : CLASS_INDEX.hazard);
+      });
+      state.rects = Core.extractRects(state.board);
     }
 
     // ---------- Dibujo ----------
@@ -198,24 +182,41 @@
       ctx.closePath();
     }
 
-    function drawGrid() {
-      const H = state.H, k = kCells();
-      state.grid.forEach((cls, key) => {
-        const parts = key.split(',');
-        const pts = Core.cellCorners(H, +parts[0], +parts[1], k);
-        tracePoly(pts);
-        if (cls === 'empty') {
-          if (state.showGrid) {
-            ctx.globalAlpha = 0.25; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;
-          }
-          return;
+    function drawBoard() {
+      const H = state.H, mc = state.markerCm, f = state.board.fine, bb = state.board.bbox;
+      const P = (x, y) => Core.boardToImage(H, mc, x, y);
+
+      // Regla: una línea cada 1 cm (más marcada cada 5 cm), para comprobar la escala
+      if (state.showRuler && bb) {
+        const xa = bb.ix0 * f, xb = bb.ix1 * f, ya = bb.iy0 * f, yb = bb.iy1 * f;
+        ctx.strokeStyle = '#fff';
+        for (let x = Math.ceil(xa); x <= xb; x++) {
+          const a = P(x, ya), b = P(x, yb);
+          ctx.globalAlpha = x % 5 === 0 ? 0.55 : 0.2; ctx.lineWidth = x % 5 === 0 ? 1.5 : 1;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
-        const color = cls === 'start' ? '#34c759' : cls === 'goal' ? '#bf5af2' : CLASSES[cls].color;
-        ctx.globalAlpha = 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
-        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
-      });
+        for (let y = Math.ceil(ya); y <= yb; y++) {
+          const a = P(xa, y), b = P(xb, y);
+          ctx.globalAlpha = y % 5 === 0 ? 0.55 : 0.2; ctx.lineWidth = y % 5 === 0 ? 1.5 : 1;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      // Mapa: rectángulos de color por tipo de bloque
+      if (state.showMap) {
+        state.rects.forEach(r => {
+          const x0 = r.ix0 * f - f / 2, x1 = r.ix1 * f + f / 2, y0 = r.iy0 * f - f / 2, y1 = r.iy1 * f + f / 2;
+          tracePoly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)]);
+          const color = r.cls === Core.START ? '#34c759' : r.cls === Core.GOAL ? '#bf5af2'
+            : (CLASSES[CLASS_KEYS[r.cls]] ? CLASSES[CLASS_KEYS[r.cls]].color : '#fff');
+          ctx.globalAlpha = 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+          ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+        });
+      }
+
       // Flecha "abajo del pizarrón" desde el bloque de inicio
-      const a = Core.applyH(H, 0.5, 0.5 + 0.5 * k), b = Core.applyH(H, 0.5, 0.5 + 1.7 * k);
+      const a = P(0, START_BLOCK_CM / 2), b = P(0, START_BLOCK_CM / 2 + 2.2);
       const ang = Math.atan2(b.y - a.y, b.x - a.x);
       ctx.strokeStyle = '#34c759'; ctx.fillStyle = '#34c759'; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
@@ -248,13 +249,13 @@
       ctx.globalAlpha = 1;
     }
 
-    function updateHud(markers, w, h) {
+    function updateHud() {
       const now = performance.now();
       let t = (state.msg && now - state.msg.t < 2500) ? state.msg.text + ' · ' : '';
       t += anchorOk() ? 'Inicio ✓' : 'Busca el bloque de inicio (ID ' + START_ID + ')';
       if (!state.samples.length) t += ' · sin calibrar: pulsa "Calibrar"';
       else t += ' · muestras: ' + state.samples.length;
-      t += ' · casillas: ' + state.grid.size + ' · ' + fps.toFixed(0) + ' fps';
+      t += ' · bloques: ' + state.rects.length + ' · ' + fps.toFixed(0) + ' fps';
       hud.textContent = t;
     }
 
@@ -277,14 +278,17 @@
           const Hinv = H && Core.invert3(H);
           if (H && Hinv) { state.H = H; state.Hinv = Hinv; state.lastAnchorT = now; }
         }
-        if (anchorOk()) { processGrid(img, w, h, markers); drawGrid(); }
-        else state.grid = new Map();
+        if (anchorOk()) {
+          state.frame++;
+          if (state.frame % UPDATE_EVERY === 0) updateStep(img, w, h, markers);
+          drawBoard();
+        }
         drawMarkers(markers);
         drawFlash();
 
         fps = fps * 0.9 + (1000 / Math.max(1, now - lastT)) * 0.1;
         lastT = now;
-        updateHud(markers, w, h);
+        updateHud();
       }
       requestAnimationFrame(loop);
     }
@@ -296,12 +300,13 @@
       const r = canvas.getBoundingClientRect();
       const x = (ev.clientX - r.left) * canvas.width / r.width;
       const y = (ev.clientY - r.top) * canvas.height / r.height;
-      const k = kCells();
-      const cell = Core.pointToCell(state.Hinv, x, y, k);
-      if (cell.cx === 0 && cell.cy === 0) { say('Ese es el bloque de inicio: toca otro'); return; }
-      const rgb = Core.meanColor(state.lastImg.data, canvas.width, canvas.height,
-        Core.cellSamplePoints(state.H, cell.cx, cell.cy, k, 0.5));
-      if (!rgb) { say('Ese bloque queda muy al borde'); return; }
+      const bp = Core.imageToBoard(state.Hinv, state.markerCm, x, y);
+      if (Math.abs(bp.x) <= START_BLOCK_CM / 2 && Math.abs(bp.y) <= START_BLOCK_CM / 2) {
+        say('Ese es el bloque de inicio: toca otro'); return;
+      }
+      const pts = Core.patchPoints(state.H, state.markerCm, bp.x, bp.y, 0.2);
+      const rgb = Core.meanColor(state.lastImg.data, canvas.width, canvas.height, pts);
+      if (!rgb) { say('Ese punto queda muy al borde'); return; }
       const cls = state.activeClass;
       state.samples.push({ cls: cls, lab: Core.rgbToLab(rgb[0], rgb[1], rgb[2]) });
       // tope por tipo: se descartan las más antiguas
@@ -309,7 +314,8 @@
       for (let i = 0; i < state.samples.length && count > MAX_PER_CLASS; i++) {
         if (state.samples[i].cls === cls) { state.samples.splice(i, 1); i--; count--; }
       }
-      state.votes.clear();
+      state.lutDirty = true;
+      state.board.scores.fill(0);
       saveCalib();
       refreshPalette();
       state.flash = { x: x, y: y, t: performance.now(), color: CLASSES[cls].color };
@@ -324,13 +330,15 @@
       document.getElementById('calHelp').hidden = !state.calibrating;
       document.getElementById('clearBtn').hidden = !state.calibrating;
     };
-    document.getElementById('gridChk').onchange = e => { state.showGrid = e.target.checked; };
+    document.getElementById('mapChk').onchange = e => { state.showMap = e.target.checked; };
+    document.getElementById('rulerChk').onchange = e => { state.showRuler = e.target.checked; };
     document.getElementById('clearBtn').onclick = () => {
-      state.samples = []; state.votes.clear(); saveCalib(); refreshPalette(); say('Calibración borrada');
+      state.samples = []; state.lutDirty = true; state.board.scores.fill(0);
+      saveCalib(); refreshPalette(); say('Calibración borrada');
     };
     document.getElementById('mcm').oninput = e => {
       const v = parseFloat(e.target.value);
-      if (v >= 0.8 && v <= 10) { state.markerCm = v; state.votes.clear(); saveCalib(); }
+      if (v >= 0.8 && v <= 10) { state.markerCm = v; newBoard(); saveCalib(); }
     };
 
     document.getElementById('btn').addEventListener('click', async () => {
@@ -369,6 +377,7 @@
 
     loadCalib();
     document.getElementById('mcm').value = state.markerCm;
+    newBoard();
     buildPalette();
     initLib();
   </script>
