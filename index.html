@@ -3,22 +3,115 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mario AR - Prueba de cámara</title>
+  <title>Mario AR - Detección de bloques</title>
   <style>
-    body { margin: 0; background: #111; color: #fff; font-family: sans-serif; text-align: center; }
-    video { width: 100%; max-height: 80vh; object-fit: cover; }
-    button { font-size: 20px; padding: 14px 28px; margin: 16px; }
-    #msg { padding: 8px; }
+    html, body { margin: 0; background: #111; color: #fff; font-family: sans-serif; }
+    #top { padding: 8px; text-align: center; }
+    button { font-size: 18px; padding: 12px 24px; }
+    #hud { font-size: 14px; padding: 4px 8px; text-align: center; min-height: 20px; }
+    canvas { width: 100%; display: block; }
+    #video { display: none; }
   </style>
 </head>
 <body>
-  <button id="btn">Activar cámara</button>
-  <div id="msg"></div>
+  <div id="top"><button id="btn">Activar cámara</button></div>
+  <div id="hud">Cargando librería…</div>
   <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
 
+  <script src="markers-config.js"></script>
   <script>
+    function loadScript(urls) {
+      return new Promise((resolve, reject) => {
+        let i = 0;
+        const next = () => {
+          if (i >= urls.length) return reject(new Error('No se pudo cargar: ' + urls.join(' | ')));
+          const s = document.createElement('script');
+          s.src = urls[i++];
+          s.onload = resolve;
+          s.onerror = () => { s.remove(); next(); };
+          document.head.appendChild(s);
+        };
+        next();
+      });
+    }
+
+    const BASES = [
+      'https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/',
+      'https://unpkg.com/js-aruco2@2.0.0/src/'
+    ];
+
     const video = document.getElementById('video');
-    const msg = document.getElementById('msg');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const hud = document.getElementById('hud');
+    const MAX_W = 960;           // se analiza a este ancho máximo para ir fluido
+    let detector = null;
+    let lastT = performance.now(), fps = 0;
+
+    async function initLib() {
+      try {
+        await loadScript(BASES.map(b => b + 'cv.js'));
+        await loadScript(BASES.map(b => b + 'aruco.js'));
+        if (typeof AR === 'undefined') throw new Error('La librería cargó pero no existe "AR".');
+        // El diccionario 4x4 va en un archivo aparte y se carga DESPUÉS de aruco.js
+        await loadScript(BASES.map(b => b + 'dictionaries/aruco_4x4_1000.js'));
+        const names = Object.keys(AR.DICTIONARIES || {});
+        if (!names.includes(DICTIONARY_NAME)) {
+          throw new Error('El diccionario "' + DICTIONARY_NAME + '" no está disponible. Disponibles: ' + names.join(', '));
+        }
+        detector = new AR.Detector({ dictionaryName: DICTIONARY_NAME });
+        hud.textContent = 'Librería OK. Pulsa "Activar cámara".';
+      } catch (e) {
+        hud.innerHTML = '<b style="color:#f66">Error:</b> ' + (e && e.message ? e.message : String(e));
+        console.error(e);
+      }
+    }
+
+    function centerOf(corners) {
+      const c = { x: 0, y: 0 };
+      corners.forEach(p => { c.x += p.x / 4; c.y += p.y / 4; });
+      return c;
+    }
+
+    function drawMarkers(markers) {
+      markers.forEach(m => {
+        const isEnemy = ENEMY_IDS.includes(m.id);
+        const color = isEnemy ? '#ff3b30' : (m.id === 0 ? '#34c759' : '#ffd60a');
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        m.corners.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+        ctx.closePath();
+        ctx.stroke();
+        const c = centerOf(m.corners);
+        ctx.fillStyle = color;
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText((BLOCKS[m.id] || 'ID ' + m.id), c.x, c.y - 22);
+      });
+    }
+
+    function loop() {
+      if (video.readyState >= 2) {
+        const scale = Math.min(1, MAX_W / video.videoWidth);
+        const w = Math.round(video.videoWidth * scale);
+        const h = Math.round(video.videoHeight * scale);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        ctx.drawImage(video, 0, 0, w, h);
+        if (detector) {
+          const img = ctx.getImageData(0, 0, w, h);
+          const markers = detector.detect(img);
+          drawMarkers(markers);
+          const now = performance.now();
+          fps = fps * 0.9 + (1000 / (now - lastT)) * 0.1;
+          lastT = now;
+          const ids = markers.map(m => m.id).sort((a, b) => a - b).join(', ') || 'ninguno';
+          hud.textContent = 'Marcadores: ' + markers.length + ' (IDs: ' + ids + ') · ' + fps.toFixed(0) + ' fps · ' + w + 'x' + h;
+        }
+      }
+      requestAnimationFrame(loop);
+    }
 
     document.getElementById('btn').addEventListener('click', async () => {
       try {
@@ -26,12 +119,15 @@
           video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
         });
         video.srcObject = stream;
-        const s = stream.getVideoTracks()[0].getSettings();
-        msg.textContent = 'Cámara OK: ' + s.width + 'x' + s.height;
+        await video.play();
+        document.getElementById('btn').style.display = 'none';
+        loop();
       } catch (e) {
-        msg.textContent = 'Error: ' + e.message;
+        hud.innerHTML = '<b style="color:#f66">Error cámara:</b> ' + e.message;
       }
     });
+
+    initLib();
   </script>
 </body>
 </html>
