@@ -314,7 +314,18 @@
     return rects;
   }
 
+  // Suaviza las 4 esquinas del marcador entre cuadros (menos temblor). Si se mueven mucho, salta directo.
+  function smoothCorners(prev, next, alpha, snapPx) {
+    const copy = next.map(p => ({ x: p.x, y: p.y }));
+    if (!prev || prev.length !== 4) return copy;
+    for (let i = 0; i < 4; i++) {
+      if (Math.hypot(next[i].x - prev[i].x, next[i].y - prev[i].y) > snapPx) return copy;
+    }
+    return next.map((p, i) => ({ x: prev[i].x + (p.x - prev[i].x) * alpha, y: prev[i].y + (p.y - prev[i].y) * alpha }));
+  }
+
   const Core = {
+    smoothCorners,
     solveLinear, homography, applyH, invert3,
     boardToImage, imageToBoard, patchPoints,
     meanColor, rgbToLab, labDistance, classify, buildLUT, lutClass,
