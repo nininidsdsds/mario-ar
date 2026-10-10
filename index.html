@@ -51,10 +51,10 @@
       </label>
     </div>
     <div class="row">
-      <label>Tolerancia de color (10-60):
-        <input id="tol" type="number" step="2" min="10" max="60" value="28">
+      <label>Tolerancia del fondo (8-50):
+        <input id="tol" type="number" step="2" min="8" max="50" value="18">
       </label><br>
-      <span style="color:#bbb;font-size:12px">Si aparecen bloques "fantasma" (rectángulos donde no hay nada), baja este número.<br>Si no reconoce bien tus bloques, súbelo.</span>
+      <span style="color:#bbb;font-size:12px">Todo lo que NO se parece al fondo cuenta como bloque.<br>Si ves rectángulos donde no hay bloques (sombras, brillos), SUBE este número.<br>Si un bloque claro (por ejemplo blanco) no aparece, BÁJALO.</span>
     </div>
     <div class="row"><button id="clearBtn" hidden>Borrar calibración</button></div>
   </div>
@@ -69,9 +69,9 @@
     <button id="bJump" class="pb jump">▲</button>
   </div>
 
-  <script src="markers-config.js?v=3"></script>
-  <script src="game-core.js?v=3"></script>
-  <script src="game-physics.js?v=3"></script>
+  <script src="markers-config.js?v=4"></script>
+  <script src="game-core.js?v=4"></script>
+  <script src="game-physics.js?v=4"></script>
   <script>
     window.addEventListener('error', e => {
       const h = document.getElementById('hud');
@@ -100,7 +100,9 @@
     // ---------- Constantes y estado ----------
     const UNIT = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
     const MAX_W = 960;           // ancho máximo de análisis
-    let maxDist = 28;            // distancia de color máxima para aceptar una clasificación (se ajusta en pantalla)
+    const MAX_DIST = 40;         // distancia de color máxima para reconocer el tipo de un bloque calibrado
+    let bgTol = 18;              // tolerancia del fondo: lo que se parece al fondo a menos de esto NO es bloque (se ajusta en pantalla)
+    const BLOB_MAX_AREA = 150, BLOB_MAX_DIM = 22;   // manchas más grandes que esto (cm², cm) no son bloques
     const MAX_PER_CLASS = 40;    // muestras máximas por tipo
     const UPDATE_EVERY = 2;      // el mapa se actualiza cada N cuadros
     const STORE_KEY = 'marioar_calib_v2';
@@ -135,7 +137,7 @@
 
     // ---------- Guardado en el navegador ----------
     function saveCalib() {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify({ samples: state.samples, markerCm: state.markerCm, tol: maxDist })); } catch (e) {}
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ samples: state.samples, markerCm: state.markerCm, bgtol: bgTol })); } catch (e) {}
     }
     function loadCalib() {
       try {
@@ -145,7 +147,7 @@
         if (Array.isArray(d.samples)) {
           state.samples = d.samples.filter(s => CLASSES[s.cls] && Array.isArray(s.lab) && s.lab.length === 3);
         }
-        if (typeof d.tol === 'number' && d.tol >= 10 && d.tol <= 60) maxDist = d.tol;
+        if (typeof d.bgtol === 'number' && d.bgtol >= 8 && d.bgtol <= 50) bgTol = d.bgtol;
         if (typeof d.markerCm === 'number' && d.markerCm >= 0.8 && d.markerCm <= 10) state.markerCm = d.markerCm;
       } catch (e) {}
     }
@@ -194,8 +196,9 @@
 
     // ---------- Actualizar el mapa ----------
     function updateStep(img, w, h, markers) {
-      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, maxDist); state.lutDirty = false; }
+      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST, { bgTol: bgTol, fallback: CLASS_INDEX.solid }); state.lutDirty = false; }
       Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.markerCm, state.lut, { decay: 0.6, fillMin: 6 });
+      Core.dropBigBlobs(state.board, BLOB_MAX_AREA, BLOB_MAX_DIM);   // quita pared, piso, marco, brillos
       const now = performance.now();
       // Meta y enemigos con marcador: se recuerdan 1.5 s aunque el marcador parpadee
       markers.forEach(m => {
@@ -335,11 +338,27 @@
       document.getElementById('playBtn').textContent = on ? '■ Salir' : '▶ Jugar';
     }
 
+    function autoBackground() {
+      let n = 0;
+      [[0, -3.5], [-2, -4], [2, -4], [0, -5.5], [-2.5, -6], [2.5, -6]].forEach(p => {
+        const pts = Core.patchPoints(state.H, state.markerCm, p[0], p[1], 0.2);
+        const rgb = Core.meanColor(state.lastImg.data, canvas.width, canvas.height, pts);
+        if (rgb) { state.samples.push({ cls: 'empty', lab: Core.rgbToLab(rgb[0], rgb[1], rgb[2]) }); n++; }
+      });
+      if (n) { state.lutDirty = true; state.board.scores.fill(0); saveCalib(); refreshPalette(); }
+      return n;
+    }
+
     function startGame() {
       if (typeof Physics === 'undefined') { say('ERROR: no se cargó game-physics.js (súbelo junto a index.html)'); return; }
       if (!video.srcObject) { say('Primero pulsa "Activar cámara"'); return; }
       if (!anchorOk()) { say('Primero enfoca el bloque de inicio'); return; }
-      if (!state.samples.length) { say('Primero calibra los bloques'); return; }
+      // Sin "Fondo" calibrado: aprende el fondo de la zona de pizarrón que está sobre el bloque de inicio.
+      if (!state.samples.some(s => s.cls === 'empty')) {
+        const n = autoBackground();
+        if (!n) { say('No pude aprender el fondo: acerca la cámara o calibra "Fondo" tocando el pizarrón'); return; }
+        say('Fondo aprendido automáticamente (' + n + ' puntos)');
+      }
       setCalibrating(false);
       const hasGoal = state.rects.some(r => r.cls === Core.GOAL);
       state.world = Physics.createWorld(state.board, {
@@ -537,7 +556,7 @@
     };
     document.getElementById('tol').oninput = e => {
       const v = parseFloat(e.target.value);
-      if (v >= 10 && v <= 60) { maxDist = v; state.lutDirty = true; state.board.scores.fill(0); saveCalib(); say('Tolerancia: ' + v); }
+      if (v >= 8 && v <= 50) { bgTol = v; state.lutDirty = true; state.board.scores.fill(0); saveCalib(); say('Tolerancia del fondo: ' + v); }
     };
     document.getElementById('mcm').oninput = e => {
       const v = parseFloat(e.target.value);
@@ -581,7 +600,7 @@
 
     loadCalib();
     document.getElementById('mcm').value = state.markerCm;
-    document.getElementById('tol').value = maxDist;
+    document.getElementById('tol').value = bgTol;
     newBoard();
     buildPalette();
     initLib();
