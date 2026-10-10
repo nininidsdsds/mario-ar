@@ -134,14 +134,38 @@
 
   // Tabla de consulta rápida: cada color RGB (a 5 bits por canal) → índice de tipo (255 = desconocido).
   // Se reconstruye solo cuando cambia la calibración.
-  function buildLUT(samples, classIndex, maxDist) {
+  // Para el fondo la luminosidad pesa aún menos (las sombras no deben contar como bloques).
+  const BG_W = [0.5, 1, 1];
+  function bgDistance(p, q) {
+    const dl = BG_W[0] * (p[0] - q[0]), da = BG_W[1] * (p[1] - q[1]), db = BG_W[2] * (p[2] - q[2]);
+    return Math.sqrt(dl * dl + da * da + db * db);
+  }
+
+  // opts = { bgTol, fallback }: si hay muestras de "Fondo", todo lo que NO se parezca al fondo (a menos de bgTol)
+  // es bloque. Se le da el tipo de la muestra más parecida (si está a menos de maxDist) o, si no, "fallback".
+  // Así no hace falta calibrar cada color de bloque.
+  function buildLUT(samples, classIndex, maxDist, opts) {
     const lut = new Uint8Array(32768).fill(255);
     if (!samples.length) return lut;
+    const bgTol = opts && opts.bgTol, fb = opts && opts.fallback;
+    const bg = [], fg = [];
+    samples.forEach(s => (s.cls === 'empty' ? bg : fg).push(s));
+    const useBg = bgTol > 0 && bg.length > 0 && fb !== undefined;
     for (let r = 0; r < 32; r++) {
       for (let g = 0; g < 32; g++) {
         for (let b = 0; b < 32; b++) {
-          const res = classify(rgbToLab(r * 8 + 4, g * 8 + 4, b * 8 + 4), samples, maxDist);
-          lut[(r << 10) | (g << 5) | b] = res.cls === null ? 255 : classIndex[res.cls];
+          const lab = rgbToLab(r * 8 + 4, g * 8 + 4, b * 8 + 4);
+          const i = (r << 10) | (g << 5) | b;
+          if (useBg) {
+            let dBg = Infinity;
+            for (const s of bg) { const d = bgDistance(lab, s.lab); if (d < dBg) dBg = d; }
+            if (dBg <= bgTol) { lut[i] = classIndex.empty; continue; }
+            const res = classify(lab, fg, maxDist);
+            lut[i] = res.cls === null ? fb : classIndex[res.cls];
+            continue;
+          }
+          const res = classify(lab, samples, maxDist);
+          lut[i] = res.cls === null ? 255 : classIndex[res.cls];
         }
       }
     }
@@ -314,6 +338,46 @@
     return rects;
   }
 
+  // Borra del mapa las "manchas" demasiado grandes para ser bloques (pared, piso, marco del pizarrón, brillos).
+  // Un bloque (o un grupo de bloques) mide pocos cm; una mancha de más de maxAreaCm2 o de más de maxDimCm
+  // de ancho/alto no es un nivel, es el entorno. Solo mira la zona visible. Devuelve cuántas borró.
+  function dropBigBlobs(board, maxAreaCm2, maxDimCm) {
+    const bb = board.bbox;
+    if (!bb) return 0;
+    const f = board.fine, nx = board.nx, W = board.W, e = board.emptyIdx, nCls = board.nClasses;
+    const gw = bb.ix1 - bb.ix0 + 1, gh = bb.iy1 - bb.iy0 + 1;
+    const seen = new Uint8Array(gw * gh), q = new Int32Array(gw * gh);
+    const maxCells = maxAreaCm2 / (f * f), maxDim = maxDimCm / f;
+    const cell = (gx, gy) => (gy + bb.iy0 + nx) * W + (gx + bb.ix0 + nx);
+    const solid = (gx, gy) => { const v = board.cls[cell(gx, gy)]; return v !== e && v < nCls; };
+    let dropped = 0;
+    for (let gy = 0; gy < gh; gy++) {
+      for (let gx = 0; gx < gw; gx++) {
+        const s = gy * gw + gx;
+        if (seen[s] || !solid(gx, gy)) continue;
+        let head = 0, tail = 0, minx = gx, maxx = gx, miny = gy, maxy = gy;
+        q[tail++] = s; seen[s] = 1;
+        while (head < tail) {
+          const c = q[head++], cy = (c / gw) | 0, cx = c - cy * gw;
+          if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+          if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+          if (cx > 0 && !seen[c - 1] && solid(cx - 1, cy)) { seen[c - 1] = 1; q[tail++] = c - 1; }
+          if (cx < gw - 1 && !seen[c + 1] && solid(cx + 1, cy)) { seen[c + 1] = 1; q[tail++] = c + 1; }
+          if (cy > 0 && !seen[c - gw] && solid(cx, cy - 1)) { seen[c - gw] = 1; q[tail++] = c - gw; }
+          if (cy < gh - 1 && !seen[c + gw] && solid(cx, cy + 1)) { seen[c + gw] = 1; q[tail++] = c + gw; }
+        }
+        if (tail > maxCells || (maxx - minx + 1) > maxDim || (maxy - miny + 1) > maxDim) {
+          for (let k = 0; k < tail; k++) {
+            const c = q[k], cy = (c / gw) | 0, cx = c - cy * gw;
+            board.cls[cell(cx, cy)] = e;
+          }
+          dropped++;
+        }
+      }
+    }
+    return dropped;
+  }
+
   // Suaviza las 4 esquinas del marcador entre cuadros (menos temblor). Si se mueven mucho, salta directo.
   function smoothCorners(prev, next, alpha, snapPx) {
     const copy = next.map(p => ({ x: p.x, y: p.y }));
@@ -329,7 +393,7 @@
     solveLinear, homography, applyH, invert3,
     boardToImage, imageToBoard, patchPoints,
     meanColor, rgbToLab, labDistance, classify, buildLUT, lutClass,
-    START, GOAL, createBoard, bIdx, updateBoard, stampRect, extractRects
+    START, GOAL, createBoard, bIdx, updateBoard, stampRect, extractRects, dropBigBlobs, bgDistance
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
