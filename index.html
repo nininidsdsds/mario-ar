@@ -62,10 +62,14 @@
     <button id="bJump" class="pb jump">▲</button>
   </div>
 
-  <script src="markers-config.js"></script>
-  <script src="game-core.js"></script>
-  <script src="game-physics.js"></script>
+  <script src="markers-config.js?v=3"></script>
+  <script src="game-core.js?v=3"></script>
+  <script src="game-physics.js?v=3"></script>
   <script>
+    window.addEventListener('error', e => {
+      const h = document.getElementById('hud');
+      if (h) h.innerHTML = '<b style="color:#f66">Error:</b> ' + (e.message || e.error) + ' (' + (e.filename || '').split('/').pop() + ':' + e.lineno + ')';
+    });
     // ---------- Carga de la librería ArUco ----------
     function loadScript(urls) {
       return new Promise((resolve, reject) => {
@@ -265,6 +269,13 @@
     }
 
     // Aviso grande arriba de la imagen: dice qué falta para que funcione
+    function drawMsg(w, h) {
+      if (!state.msg || performance.now() - state.msg.t > 3500) return;
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillRect(0, h - 120, w, 40);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(state.msg.text, w / 2, h - 94);
+    }
     function drawBanner(w) {
       let text = null;
       if (!anchorOk()) text = 'Apunta al bloque de inicio (marcador ID ' + START_ID + ')';
@@ -312,6 +323,8 @@
     }
 
     function startGame() {
+      if (typeof Physics === 'undefined') { say('ERROR: no se cargó game-physics.js (súbelo junto a index.html)'); return; }
+      if (!video.srcObject) { say('Primero pulsa "Activar cámara"'); return; }
       if (!anchorOk()) { say('Primero enfoca el bloque de inicio'); return; }
       if (!state.samples.length) { say('Primero calibra los bloques'); return; }
       setCalibrating(false);
@@ -388,7 +401,7 @@
       el.addEventListener('contextmenu', e => e.preventDefault());
     }
     bindHold('bLeft', 'left'); bindHold('bRight', 'right'); bindHold('bJump', 'jump');
-    document.getElementById('playBtn').onclick = () => { state.playing ? stopGame() : startGame(); };
+    document.getElementById('playBtn').onclick = () => { try { state.playing ? stopGame() : startGame(); } catch (e) { say('ERROR: ' + e.message); console.error(e); } };
 
     // Teclado (para probar en computador)
     const KEYMAP = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'jump', ' ': 'jump', a: 'left', d: 'right', w: 'jump' };
@@ -427,6 +440,7 @@
         drawMarkers(markers);
         drawFlash();
         drawBanner(w);
+        drawMsg(w, h);
 
         fps = fps * 0.9 + (1000 / Math.max(1, now - lastT)) * 0.1;
         lastT = now;
