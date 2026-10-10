@@ -240,7 +240,7 @@
           tracePoly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)]);
           const color = r.cls === Core.START ? '#34c759' : r.cls === Core.GOAL ? '#bf5af2'
             : (CLASSES[CLASS_KEYS[r.cls]] ? CLASSES[CLASS_KEYS[r.cls]].color : '#fff');
-          ctx.globalAlpha = state.playing ? 0.2 : 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+          ctx.globalAlpha = state.playing ? 0.3 : 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
           ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
         });
       }
@@ -316,7 +316,7 @@
         const wd = state.world, i = state.input;
         t += ' | JUEGO: ' + (i.left ? '◀' : '·') + (i.right ? '▶' : '·') + (i.jump ? '▲' : '·') +
           ' suelo=' + (wd.onGround ? 'sí' : 'no') + ' x=' + wd.x.toFixed(1) + ' y=' + wd.y.toFixed(1) +
-          (wd.stuck ? ' ATASCADO' : '');
+          (wd.blockedX ? ' PARED' : '') + (wd.stuck ? ' ATASCADO' : '') + ' caídas=' + wd.falls;
       }
       hud.textContent = t;
     }
@@ -364,8 +364,14 @@
       if (!wd) return;
       const dt = Math.min(0.05, (now - state.lastGameT) / 1000);
       state.lastGameT = now;
+      // el "fondo" es lo más bajo que hay en el mapa + 12 cm
+      let maxY = 1;
+      for (const r of state.rects) if (r.iy1 * state.board.fine > maxY) maxY = r.iy1 * state.board.fine;
+      wd.fallY = maxY + 12;
+      const fallsBefore = wd.falls;
       if ((wd.dead && wd.endT > 0.9) || (wd.won && wd.endT > 3)) Physics.respawn(wd);
       for (let i = 0; i < 2; i++) Physics.step(wd, state.board, state.input, dt / 2);
+      if (wd.falls > fallsBefore) say('¡Caíste! Vuelves al inicio');
     }
 
     function drawCharacter(wd) {
@@ -386,6 +392,9 @@
       const ex = wd.x + fc * 0.3;
       quad(ex - 0.08, top + 0.5, ex + 0.08, top + 0.68, '#000');       // ojo
       ctx.globalAlpha = 1;
+      // caja de colisión (línea blanca punteada): es lo que "toca" los bloques
+      tracePoly([Pt(l, top), Pt(r, top), Pt(r, wd.y), Pt(l, wd.y)]);
+      ctx.setLineDash([4, 3]); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
       if (wd.won || wd.dead) {
         ctx.fillStyle = 'rgba(0,0,0,0.65)';
         ctx.fillRect(0, 40, canvas.width, 40);
@@ -455,8 +464,8 @@
         }
         if (anchorOk()) {
           state.frame++;
-          // Al jugar, el mapa queda congelado (así el personaje dibujado no se confunde con un bloque)
-          if (!state.playing && state.frame % UPDATE_EVERY === 0) updateStep(img, w, h, markers);
+          // El mapa sigue actualizándose mientras juegas (el personaje se dibuja encima, no lo ve la cámara)
+          if (state.frame % UPDATE_EVERY === 0) updateStep(img, w, h, markers);
           drawBoard();
           if (state.playing && state.world) { gameTick(now); drawCharacter(state.world); }
         } else if (state.playing) {
