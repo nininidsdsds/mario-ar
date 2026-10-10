@@ -31,14 +31,25 @@
         if (board.cls[(iy + board.nx) * board.W + (ix + board.nx)] !== board.emptyIdx && iy > maxIy) maxIy = iy;
       }
     }
+    // Despeja la zona de aparición (encima del bloque de inicio): si la cámara ensució ahí el mapa,
+    // el personaje quedaría atrapado dentro de un "sólido" falso.
+    const iyTop = Math.ceil((-cfg.startCm / 2) / f);          // fila superior del bloque de inicio
+    const goalVal = (cfg.goal && cfg.goal[0] !== undefined) ? cfg.goal[0] : -1;
+    const cx = Math.ceil(1.0 / f), cy = Math.ceil(5.0 / f);
+    for (let iy = iyTop - cy; iy < iyTop; iy++) {
+      for (let ix = -cx; ix <= cx; ix++) {
+        const k = (iy + board.nx) * board.W + (ix + board.nx);
+        if (board.cls[k] !== goalVal) board.cls[k] = board.emptyIdx;
+      }
+    }
     const w = {
       w: P.W, h: P.H,
       solid: makeLut(cfg.solid), hazard: makeLut(cfg.hazard), goal: makeLut(cfg.goal),
-      spawnX: 0, spawnY: -cfg.startCm / 2 - 0.01,
+      spawnX: 0, spawnY: (iyTop - 0.5) * f - 0.01,
       fallY: maxIy * f + 12,
       x: 0, y: 0, vx: 0, vy: 0, face: 1, onGround: false,
       coyote: 0, buffer: 0, prevJump: false,
-      dead: false, won: false, endT: 0
+      dead: false, won: false, endT: 0, stuck: 0
     };
     respawn(w);
     return w;
@@ -110,6 +121,14 @@
 
   function step(w, b, input, dt) {
     if (w.dead || w.won) { w.endT += dt; return; }
+
+    w.stuck = 0;
+    if (hit(w, b, w.x, w.y, w.solid, P.EPS)) {
+      w.stuck = 1;
+      for (let u = 0.1; u <= 3.0; u += 0.1) {
+        if (!hit(w, b, w.x, w.y - u, w.solid, P.EPS)) { w.y -= u; w.vy = 0; w.stuck = 2; break; }
+      }
+    }
 
     const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     if (dir) {
