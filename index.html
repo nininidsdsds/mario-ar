@@ -14,6 +14,15 @@
     .row { margin: 6px 0; text-align: center; }
     #calHelp { color: #bbb; font-size: 13px; line-height: 1.4; }
     input[type=number] { width: 70px; font-size: 16px; padding: 4px; }
+    #playBtn { font-size: 20px; padding: 12px 28px; border-color: #34c759; }
+    #pad { position: fixed; left: 0; right: 0; bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end; padding: 0 16px; pointer-events: none; z-index: 5; }
+    #pad[hidden] { display: none; }
+    .padSide { display: flex; gap: 14px; }
+    .pb { pointer-events: auto; width: 84px; height: 84px; border-radius: 50%; font-size: 34px; margin: 0; padding: 0;
+      background: rgba(0,0,0,0.45); border: 3px solid rgba(255,255,255,0.8); color: #fff;
+      touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .pb.jump { width: 104px; height: 104px; }
+    .pb.on { background: rgba(255,214,10,0.75); color: #000; }
   </style>
 </head>
 <body>
@@ -22,6 +31,7 @@
   <canvas id="canvas"></canvas>
 
   <div id="controls" hidden>
+    <div class="row"><button id="playBtn">▶ Jugar</button></div>
     <div class="row">
       <button id="calBtn">Calibrar: NO</button>
       <label><input type="checkbox" id="mapChk" checked> Mapa</label>
@@ -44,8 +54,17 @@
 
   <video id="video" autoplay playsinline muted style="display:none"></video>
 
+  <div id="pad" hidden>
+    <div class="padSide">
+      <button id="bLeft" class="pb">◀</button>
+      <button id="bRight" class="pb">▶</button>
+    </div>
+    <button id="bJump" class="pb jump">▲</button>
+  </div>
+
   <script src="markers-config.js"></script>
   <script src="game-core.js"></script>
+  <script src="game-physics.js"></script>
   <script>
     // ---------- Carga de la librería ArUco ----------
     function loadScript(urls) {
@@ -90,12 +109,18 @@
       H: null, Hinv: null, lastAnchorT: 0,
       lastImg: null, board: null, lut: null, lutDirty: true,
       rects: [], specials: new Map(), frame: 0,
-      flash: null, msg: null
+      flash: null, msg: null,
+      playing: false, world: null, lastGameT: 0, sm: null,
+      input: { left: false, right: false, jump: false }
     };
     let detector = null;
     let lastT = performance.now(), fps = 0;
 
-    function newBoard() { state.board = Core.createBoard(BOARD_HALF_CM, FINE_CM, CLASS_KEYS.length, EMPTY_IDX); state.rects = []; }
+    function newBoard() {
+      state.board = Core.createBoard(BOARD_HALF_CM, FINE_CM, CLASS_KEYS.length, EMPTY_IDX);
+      state.rects = []; state.world = null;
+      if (state.playing) stopGame();
+    }
 
     // ---------- Guardado en el navegador ----------
     function saveCalib() {
