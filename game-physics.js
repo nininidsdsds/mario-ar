@@ -5,15 +5,15 @@
   'use strict';
 
   const P = {
-    W: 1.2, H: 1.6,            // tamaño del personaje (cm)
+    W: 1.0, H: 1.6,            // tamaño del personaje (cm)
     SPEED: 8,                  // velocidad al correr (cm/s)
     ACCEL: 70, AIR_ACCEL: 45, FRICTION: 90,
     GRAVITY: 80,               // cm/s²
-    JUMP_V: 24,                // salto ≈ 3.6 cm de alto: pasa sobre un bloque de 2 cm
+    JUMP_V: 30,                // salto ≈ 5.6 cm de alto: sube a un bloque de 2 cm (y a uno de 4 cm)
     MAX_FALL: 45,
-    CUT: 0.45,                 // al soltar el botón el salto se corta
+    CUT: 0.6,                 // al soltar el botón el salto se corta
     COYOTE: 0.1, BUFFER: 0.12, // margen para saltar justo al borde / justo antes de aterrizar
-    STEP_UP: 0.6,              // sube solo desniveles pequeños (bloques imanados no perfectamente alineados)
+    STEP_UP: 1.0,              // sube solo desniveles pequeños (bloques imanados no perfectamente alineados)
     EPS: 1e-4
   };
 
@@ -49,7 +49,7 @@
       fallY: maxIy * f + 12,
       x: 0, y: 0, vx: 0, vy: 0, face: 1, onGround: false,
       coyote: 0, buffer: 0, prevJump: false,
-      dead: false, won: false, endT: 0, stuck: 0
+      dead: false, won: false, endT: 0, stuck: 0, blockedX: false, falls: 0
     };
     respawn(w);
     return w;
@@ -93,7 +93,7 @@
         const m = (lo + hi) / 2;
         if (hit(w, b, w.x + m, w.y, w.solid, P.EPS)) hi = m; else lo = m;
       }
-      w.x += lo; w.vx = 0;
+      w.x += lo; w.vx = 0; w.blockedX = true;
       return;
     }
   }
@@ -122,7 +122,7 @@
   function step(w, b, input, dt) {
     if (w.dead || w.won) { w.endT += dt; return; }
 
-    w.stuck = 0;
+    w.stuck = 0; w.blockedX = false;
     if (hit(w, b, w.x, w.y, w.solid, P.EPS)) {
       w.stuck = 1;
       for (let u = 0.1; u <= 3.0; u += 0.1) {
@@ -154,7 +154,8 @@
       w.vy = 0;
     }
 
-    if (hit(w, b, w.x, w.y, w.hazard, 0.2) || w.y > w.fallY) { w.dead = true; w.endT = 0; }
+    if (w.y > w.fallY) { respawn(w); w.falls++; return; }          // cae al fondo: vuelve al inicio al instante
+    if (hit(w, b, w.x, w.y, w.hazard, 0.2)) { w.dead = true; w.endT = 0; }
     else if (hit(w, b, w.x, w.y, w.goal, 0.1)) { w.won = true; w.endT = 0; }
   }
 
