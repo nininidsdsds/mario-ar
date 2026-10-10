@@ -303,6 +303,98 @@
       hud.textContent = t;
     }
 
+    // ---------- Juego ----------
+    function setPlayUI(on) {
+      const ch = Array.from(document.getElementById('controls').children);
+      ch.forEach((el, i) => { if (i > 0) el.style.display = on ? 'none' : ''; });
+      document.getElementById('pad').hidden = !on;
+      document.getElementById('playBtn').textContent = on ? '■ Salir' : '▶ Jugar';
+    }
+
+    function startGame() {
+      if (!anchorOk()) { say('Primero enfoca el bloque de inicio'); return; }
+      if (!state.samples.length) { say('Primero calibra los bloques'); return; }
+      setCalibrating(false);
+      const hasGoal = state.rects.some(r => r.cls === Core.GOAL);
+      state.world = Physics.createWorld(state.board, {
+        solid: [CLASS_INDEX.solid, CLASS_INDEX.cloud, CLASS_INDEX.question, Core.START],
+        hazard: [CLASS_INDEX.hazard],
+        goal: [Core.GOAL],
+        startCm: START_BLOCK_CM
+      });
+      state.prevMap = state.showMap;
+      state.showMap = false;
+      document.getElementById('mapChk').checked = false;
+      state.playing = true;
+      state.lastGameT = performance.now();
+      setPlayUI(true);
+      say(hasGoal ? '¡A jugar!' : 'Aviso: no veo la meta (enfoca su marcador antes de jugar)');
+    }
+
+    function stopGame() {
+      state.playing = false;
+      state.world = null;
+      state.input.left = state.input.right = state.input.jump = false;
+      document.querySelectorAll('.pb').forEach(b => b.classList.remove('on'));
+      if (state.prevMap !== undefined) {
+        state.showMap = state.prevMap;
+        document.getElementById('mapChk').checked = state.prevMap;
+      }
+      setPlayUI(false);
+    }
+
+    function gameTick(now) {
+      const wd = state.world;
+      if (!wd) return;
+      const dt = Math.min(0.05, (now - state.lastGameT) / 1000);
+      state.lastGameT = now;
+      if ((wd.dead && wd.endT > 0.9) || (wd.won && wd.endT > 3)) Physics.respawn(wd);
+      for (let i = 0; i < 2; i++) Physics.step(wd, state.board, state.input, dt / 2);
+    }
+
+    function drawCharacter(wd) {
+      const H = state.H, mc = state.markerCm;
+      const Pt = (x, y) => Core.boardToImage(H, mc, x, y);
+      const quad = (x0, y0, x1, y1, color) => {
+        tracePoly([Pt(x0, y0), Pt(x1, y0), Pt(x1, y1), Pt(x0, y1)]);
+        ctx.fillStyle = color; ctx.fill();
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+      };
+      const hw = Physics.W / 2, l = wd.x - hw, r = wd.x + hw, top = wd.y - Physics.H, fc = wd.face;
+      ctx.globalAlpha = wd.dead ? 0.45 : 1;
+      quad(l, top + 1.15, r, wd.y, '#2f5bd8');                         // pantalón
+      quad(l, top + 0.8, r, top + 1.15, '#e53935');                    // camiseta
+      quad(l, top + 0.4, r, top + 0.8, '#f2c18d');                     // cara
+      quad(l, top, r, top + 0.4, '#e53935');                           // gorra
+      quad(fc > 0 ? wd.x : l - 0.25, top + 0.3, fc > 0 ? r + 0.25 : wd.x, top + 0.4, '#b71c1c'); // visera
+      const ex = wd.x + fc * 0.3;
+      quad(ex - 0.08, top + 0.5, ex + 0.08, top + 0.68, '#000');       // ojo
+      ctx.globalAlpha = 1;
+      if (wd.won || wd.dead) {
+        ctx.fillStyle = 'rgba(0,0,0,0.65)';
+        ctx.fillRect(0, 40, canvas.width, 40);
+        ctx.fillStyle = wd.won ? '#bf5af2' : '#ff453a';
+        ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(wd.won ? '¡LLEGASTE A LA META!' : '¡Perdiste!', canvas.width / 2, 68);
+      }
+    }
+
+    function bindHold(id, key) {
+      const el = document.getElementById(id);
+      const on = e => { e.preventDefault(); state.input[key] = true; el.classList.add('on'); };
+      const off = () => { state.input[key] = false; el.classList.remove('on'); };
+      el.addEventListener('pointerdown', on);
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, off));
+      el.addEventListener('contextmenu', e => e.preventDefault());
+    }
+    bindHold('bLeft', 'left'); bindHold('bRight', 'right'); bindHold('bJump', 'jump');
+    document.getElementById('playBtn').onclick = () => { state.playing ? stopGame() : startGame(); };
+
+    // Teclado (para probar en computador)
+    const KEYMAP = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'jump', ' ': 'jump', a: 'left', d: 'right', w: 'jump' };
+    window.addEventListener('keydown', e => { if (KEYMAP[e.key]) { state.input[KEYMAP[e.key]] = true; e.preventDefault(); } });
+    window.addEventListener('keyup', e => { if (KEYMAP[e.key]) state.input[KEYMAP[e.key]] = false; });
+
     // ---------- Bucle principal ----------
     function loop() {
       if (video.readyState >= 2) {
@@ -318,14 +410,19 @@
         const anchor = markers.find(m => m.id === START_ID);
         const now = performance.now();
         if (anchor) {
-          const H = Core.homography(UNIT, anchorCorners(anchor));
+          state.sm = Core.smoothCorners(state.sm, anchorCorners(anchor), 0.5, 25);
+          const H = Core.homography(UNIT, state.sm);
           const Hinv = H && Core.invert3(H);
           if (H && Hinv) { state.H = H; state.Hinv = Hinv; state.lastAnchorT = now; }
         }
         if (anchorOk()) {
           state.frame++;
-          if (state.frame % UPDATE_EVERY === 0) updateStep(img, w, h, markers);
+          // Al jugar, el mapa queda congelado (así el personaje dibujado no se confunde con un bloque)
+          if (!state.playing && state.frame % UPDATE_EVERY === 0) updateStep(img, w, h, markers);
           drawBoard();
+          if (state.playing && state.world) { gameTick(now); drawCharacter(state.world); }
+        } else if (state.playing) {
+          state.lastGameT = now;   // pausa si se pierde el bloque de inicio
         }
         drawMarkers(markers);
         drawFlash();
