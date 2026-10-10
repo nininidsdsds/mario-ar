@@ -147,7 +147,7 @@
   function buildLUT(samples, classIndex, maxDist, opts) {
     const lut = new Uint8Array(32768).fill(255);
     if (!samples.length) return lut;
-    const bgTol = opts && opts.bgTol, fb = opts && opts.fallback;
+    const bgTol = opts && opts.bgTol, fb = opts && opts.fallback, fgTol = (opts && opts.fgTol) || 16;
     const bg = [], fg = [];
     samples.forEach(s => (s.cls === 'empty' ? bg : fg).push(s));
     const useBg = bgTol > 0 && bg.length > 0 && fb !== undefined;
@@ -157,10 +157,16 @@
           const lab = rgbToLab(r * 8 + 4, g * 8 + 4, b * 8 + 4);
           const i = (r << 10) | (g << 5) | b;
           if (useBg) {
-            let dBg = Infinity;
-            for (const s of bg) { const d = bgDistance(lab, s.lab); if (d < dBg) dBg = d; }
-            if (dBg <= bgTol) { lut[i] = classIndex.empty; continue; }
+            let dBg = Infinity, dBgL = Infinity;
+            for (const s of bg) {
+              const d = bgDistance(lab, s.lab); if (d < dBg) dBg = d;
+              const d2 = labDistance(lab, s.lab); if (d2 < dBgL) dBgL = d2;
+            }
             const res = classify(lab, fg, maxDist);
+            // Un color calibrado como bloque (gris, café, nube...) gana si está MÁS CERCA de él que del fondo,
+            // aunque se parezca al pizarrón: así se detectan bloques pálidos.
+            if (res.cls !== null && res.dist <= fgTol && res.dist < dBgL) { lut[i] = classIndex[res.cls]; continue; }
+            if (dBg <= bgTol) { lut[i] = classIndex.empty; continue; }
             lut[i] = res.cls === null ? fb : classIndex[res.cls];
             continue;
           }
@@ -378,6 +384,42 @@
     return dropped;
   }
 
+  // Transformación SIMILAR (mover + girar + escalar, sin perspectiva) a partir de las 4 esquinas del marcador.
+  // Un marcador de 2 cm da una perspectiva muy ruidosa; la similitud promedia las 4 esquinas y es mucho más estable.
+  // Devuelve 9 números como homography(): lleva el cuadrado unitario del marcador a la imagen.
+  function similarityH(c) {
+    const ux = ((c[1].x - c[0].x) + (c[2].x - c[3].x)) / 2, uy = ((c[1].y - c[0].y) + (c[2].y - c[3].y)) / 2;
+    const vx = ((c[3].x - c[0].x) + (c[2].x - c[1].x)) / 2, vy = ((c[3].y - c[0].y) + (c[2].y - c[1].y)) / 2;
+    const s = (Math.hypot(ux, uy) + Math.hypot(vx, vy)) / 2;
+    const a1 = Math.atan2(uy, ux);
+    let d = (Math.atan2(vy, vx) - Math.PI / 2) - a1;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    const th = a1 + d / 2;
+    const px = s * Math.cos(th), py = s * Math.sin(th);   // eje x del pizarrón en la imagen
+    const qx = -py, qy = px;                              // eje y (hacia abajo)
+    const cx = (c[0].x + c[1].x + c[2].x + c[3].x) / 4, cy = (c[0].y + c[1].y + c[2].y + c[3].y) / 4;
+    return [px, qx, cx - 0.5 * px - 0.5 * qx, py, qy, cy - 0.5 * py - 0.5 * qy, 0, 0, 1];
+  }
+
+  function markerSide(c) {
+    let s = 0;
+    for (let i = 0; i < 4; i++) s += Math.hypot(c[(i + 1) % 4].x - c[i].x, c[(i + 1) % 4].y - c[i].y);
+    return s / 4;
+  }
+
+  // Suavizado adaptativo: si el marcador casi no se mueve (ruido de detección) se filtra mucho;
+  // si se mueve de verdad (mueves el celular) sigue rápido; si salta lejos, salta directo.
+  function smoothCornersAdaptive(prev, next) {
+    const copy = next.map(p => ({ x: p.x, y: p.y }));
+    if (!prev || prev.length !== 4) return copy;
+    let d = 0;
+    for (let i = 0; i < 4; i++) d = Math.max(d, Math.hypot(next[i].x - prev[i].x, next[i].y - prev[i].y));
+    if (d > 40) return copy;
+    const a = d < 1.5 ? 0.08 : d < 4 ? 0.2 : d < 10 ? 0.45 : 0.75;
+    return next.map((p, i) => ({ x: prev[i].x + (p.x - prev[i].x) * a, y: prev[i].y + (p.y - prev[i].y) * a }));
+  }
+
   // Suaviza las 4 esquinas del marcador entre cuadros (menos temblor). Si se mueven mucho, salta directo.
   function smoothCorners(prev, next, alpha, snapPx) {
     const copy = next.map(p => ({ x: p.x, y: p.y }));
@@ -389,7 +431,7 @@
   }
 
   const Core = {
-    smoothCorners,
+    smoothCorners, smoothCornersAdaptive, similarityH, markerSide,
     solveLinear, homography, applyH, invert3,
     boardToImage, imageToBoard, patchPoints,
     meanColor, rgbToLab, labDistance, classify, buildLUT, lutClass,
