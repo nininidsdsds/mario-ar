@@ -37,6 +37,7 @@
       <button id="calBtn">Calibrar: NO</button>
       <label><input type="checkbox" id="mapChk" checked> Mapa</label>
       <label><input type="checkbox" id="rulerChk"> Regla (1 cm)</label>
+      <label><input type="checkbox" id="perspChk"> Perspectiva</label>
     </div>
     <div class="row" id="palette" hidden></div>
     <div class="row" id="calHelp" hidden>
@@ -69,9 +70,9 @@
     <button id="bJump" class="pb jump">▲</button>
   </div>
 
-  <script src="markers-config.js?v=4"></script>
-  <script src="game-core.js?v=4"></script>
-  <script src="game-physics.js?v=4"></script>
+  <script src="markers-config.js?v=5"></script>
+  <script src="game-core.js?v=5"></script>
+  <script src="game-physics.js?v=5"></script>
   <script>
     window.addEventListener('error', e => {
       const h = document.getElementById('hud');
@@ -123,7 +124,7 @@
       lastImg: null, board: null, lut: null, lutDirty: true,
       rects: [], specials: new Map(), frame: 0,
       flash: null, msg: null,
-      playing: false, world: null, lastGameT: 0, sm: null,
+      playing: false, world: null, lastGameT: 0, sm: null, sideLen: 0, outliers: 0, persp: false,
       input: { left: false, right: false, jump: false }
     };
     let detector = null;
@@ -196,8 +197,8 @@
 
     // ---------- Actualizar el mapa ----------
     function updateStep(img, w, h, markers) {
-      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST, { bgTol: bgTol, fallback: CLASS_INDEX.solid }); state.lutDirty = false; }
-      Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.markerCm, state.lut, { decay: 0.6, fillMin: 6 });
+      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST, { bgTol: bgTol, fallback: CLASS_INDEX.solid, fgTol: 16 }); state.lutDirty = false; }
+      Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.markerCm, state.lut, { decay: state.playing ? 0.8 : 0.6, fillMin: 6 });
       Core.dropBigBlobs(state.board, BLOB_MAX_AREA, BLOB_MAX_DIM);   // quita pared, piso, marco, brillos
       const now = performance.now();
       // Meta y enemigos con marcador: se recuerdan 1.5 s aunque el marcador parpadee
@@ -484,10 +485,26 @@
         const anchor = markers.find(m => m.id === START_ID);
         const now = performance.now();
         if (anchor) {
-          state.sm = Core.smoothCorners(state.sm, anchorCorners(anchor), 0.5, 25);
-          const H = Core.homography(UNIT, state.sm);
-          const Hinv = H && Core.invert3(H);
-          if (H && Hinv) { state.H = H; state.Hinv = Hinv; state.lastAnchorT = now; }
+          // Un cuadro con el marcador de tamaño muy distinto al anterior es una detección mala: se ignora
+          // (salvo que se repita 4 veces seguidas, entonces el cambio es real).
+          const cand = anchorCorners(anchor);
+          const side = Core.markerSide(cand);
+          let accept = true;
+          if (state.sideLen && (now - state.lastAnchorT) < 700) {
+            const ratio = side / state.sideLen;
+            if (ratio < 0.8 || ratio > 1.25) {
+              state.outliers++;
+              if (state.outliers < 4) accept = false; else state.sm = null;
+            } else state.outliers = 0;
+          }
+          if (accept) {
+            state.outliers = 0;
+            state.sm = Core.smoothCornersAdaptive(state.sm, cand);
+            state.sideLen = Core.markerSide(state.sm);
+            const H = state.persp ? Core.homography(UNIT, state.sm) : Core.similarityH(state.sm);
+            const Hinv = H && Core.invert3(H);
+            if (H && Hinv) { state.H = H; state.Hinv = Hinv; state.lastAnchorT = now; }
+          } else if (state.H) state.lastAnchorT = now;
         }
         if (anchorOk()) {
           state.frame++;
@@ -549,6 +566,7 @@
     }
     document.getElementById('calBtn').onclick = () => setCalibrating(!state.calibrating);
     document.getElementById('mapChk').onchange = e => { state.showMap = e.target.checked; };
+    document.getElementById('perspChk').onchange = e => { state.persp = e.target.checked; state.sm = null; newBoard(); };
     document.getElementById('rulerChk').onchange = e => { state.showRuler = e.target.checked; };
     document.getElementById('clearBtn').onclick = () => {
       state.samples = []; state.lutDirty = true; state.board.scores.fill(0);
