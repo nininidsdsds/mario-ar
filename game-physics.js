@@ -31,19 +31,10 @@
         if (board.cls[(iy + board.nx) * board.W + (ix + board.nx)] !== board.emptyIdx && iy > maxIy) maxIy = iy;
       }
     }
-    // Despeja la zona de aparición (encima del bloque de inicio): si la cámara ensució ahí el mapa,
-    // el personaje quedaría atrapado dentro de un "sólido" falso.
     const iyTop = Math.ceil((-cfg.startCm / 2) / f);          // fila superior del bloque de inicio
     const goalVal = (cfg.goal && cfg.goal[0] !== undefined) ? cfg.goal[0] : -1;
-    const cx = Math.ceil(1.0 / f), cy = Math.ceil(5.0 / f);
-    for (let iy = iyTop - cy; iy < iyTop; iy++) {
-      for (let ix = -cx; ix <= cx; ix++) {
-        const k = (iy + board.nx) * board.W + (ix + board.nx);
-        if (board.cls[k] !== goalVal) board.cls[k] = board.emptyIdx;
-      }
-    }
     const w = {
-      w: P.W, h: P.H,
+      w: P.W, h: P.H, startCm: cfg.startCm, goalVal: goalVal,
       solid: makeLut(cfg.solid), hazard: makeLut(cfg.hazard), goal: makeLut(cfg.goal),
       spawnX: 0, spawnY: (iyTop - 0.5) * f - 0.01,
       fallY: maxIy * f + 12,
@@ -51,8 +42,23 @@
       coyote: 0, buffer: 0, prevJump: false,
       dead: false, won: false, endT: 0, stuck: 0, blockedX: false, falls: 0
     };
+    clearSpawn(board, w);
     respawn(w);
     return w;
+  }
+
+  // Despeja el aire sobre el bloque de inicio (2 cm de ancho, 5 cm de alto): si la cámara ensucia ahí el mapa
+  // con "sólidos" falsos, el personaje quedaría atrapado. Se repite en cada actualización del mapa.
+  function clearSpawn(board, w) {
+    const f = board.fine, nx = board.nx;
+    const iyTop = Math.ceil((-w.startCm / 2) / f);
+    const cx = Math.ceil(1.0 / f), cy = Math.ceil(5.0 / f);
+    for (let iy = iyTop - cy; iy < iyTop; iy++) {
+      for (let ix = -cx; ix <= cx; ix++) {
+        const k = (iy + nx) * board.W + (ix + nx);
+        if (board.cls[k] !== w.goalVal) board.cls[k] = board.emptyIdx;
+      }
+    }
   }
 
   function respawn(w) {
@@ -159,7 +165,7 @@
     else if (hit(w, b, w.x, w.y, w.goal, 0.1)) { w.won = true; w.endT = 0; }
   }
 
-  const Physics = Object.assign({ createWorld, respawn, step }, { W: P.W, H: P.H, params: P });
+  const Physics = Object.assign({ createWorld, respawn, step, clearSpawn }, { W: P.W, H: P.H, params: P });
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else root.Physics = Physics;
