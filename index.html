@@ -239,7 +239,7 @@
           tracePoly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)]);
           const color = r.cls === Core.START ? '#34c759' : r.cls === Core.GOAL ? '#bf5af2'
             : (CLASSES[CLASS_KEYS[r.cls]] ? CLASSES[CLASS_KEYS[r.cls]].color : '#fff');
-          ctx.globalAlpha = 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+          ctx.globalAlpha = state.playing ? 0.2 : 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
           ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
         });
       }
@@ -311,6 +311,12 @@
       if (!state.samples.length) t += ' · sin calibrar: pulsa "Calibrar"';
       else t += ' · muestras: ' + state.samples.length;
       t += ' · detectado: ' + classCounts() + ' · ' + fps.toFixed(0) + ' fps';
+      if (state.playing && state.world) {
+        const wd = state.world, i = state.input;
+        t += ' | JUEGO: ' + (i.left ? '◀' : '·') + (i.right ? '▶' : '·') + (i.jump ? '▲' : '·') +
+          ' suelo=' + (wd.onGround ? 'sí' : 'no') + ' x=' + wd.x.toFixed(1) + ' y=' + wd.y.toFixed(1) +
+          (wd.stuck ? ' ATASCADO' : '');
+      }
       hud.textContent = t;
     }
 
@@ -335,9 +341,6 @@
         goal: [Core.GOAL],
         startCm: START_BLOCK_CM
       });
-      state.prevMap = state.showMap;
-      state.showMap = false;
-      document.getElementById('mapChk').checked = false;
       state.playing = true;
       state.lastGameT = performance.now();
       setPlayUI(true);
