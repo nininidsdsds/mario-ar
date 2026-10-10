@@ -50,6 +50,12 @@
         <input id="mcm" type="number" step="0.05" min="0.8" max="10" value="1.8">
       </label>
     </div>
+    <div class="row">
+      <label>Tolerancia de color (10-60):
+        <input id="tol" type="number" step="2" min="10" max="60" value="28">
+      </label><br>
+      <span style="color:#bbb;font-size:12px">Si aparecen bloques "fantasma" (rectángulos donde no hay nada), baja este número.<br>Si no reconoce bien tus bloques, súbelo.</span>
+    </div>
     <div class="row"><button id="clearBtn" hidden>Borrar calibración</button></div>
   </div>
 
@@ -94,7 +100,7 @@
     // ---------- Constantes y estado ----------
     const UNIT = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
     const MAX_W = 960;           // ancho máximo de análisis
-    const MAX_DIST = 40;         // distancia de color máxima para aceptar una clasificación
+    let maxDist = 28;            // distancia de color máxima para aceptar una clasificación (se ajusta en pantalla)
     const MAX_PER_CLASS = 40;    // muestras máximas por tipo
     const UPDATE_EVERY = 2;      // el mapa se actualiza cada N cuadros
     const STORE_KEY = 'marioar_calib_v2';
@@ -129,7 +135,7 @@
 
     // ---------- Guardado en el navegador ----------
     function saveCalib() {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify({ samples: state.samples, markerCm: state.markerCm })); } catch (e) {}
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ samples: state.samples, markerCm: state.markerCm, tol: maxDist })); } catch (e) {}
     }
     function loadCalib() {
       try {
@@ -139,6 +145,7 @@
         if (Array.isArray(d.samples)) {
           state.samples = d.samples.filter(s => CLASSES[s.cls] && Array.isArray(s.lab) && s.lab.length === 3);
         }
+        if (typeof d.tol === 'number' && d.tol >= 10 && d.tol <= 60) maxDist = d.tol;
         if (typeof d.markerCm === 'number' && d.markerCm >= 0.8 && d.markerCm <= 10) state.markerCm = d.markerCm;
       } catch (e) {}
     }
@@ -187,7 +194,7 @@
 
     // ---------- Actualizar el mapa ----------
     function updateStep(img, w, h, markers) {
-      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST); state.lutDirty = false; }
+      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, maxDist); state.lutDirty = false; }
       Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.markerCm, state.lut, { decay: 0.6, fillMin: 6 });
       const now = performance.now();
       // Meta y enemigos con marcador: se recuerdan 1.5 s aunque el marcador parpadee
@@ -202,6 +209,7 @@
         if (now - s.t > 1500) return;
         Core.stampRect(state.board, s.x, s.y, ENEMY_CM, ENEMY_CM, id === GOAL_ID ? Core.GOAL : CLASS_INDEX.hazard);
       });
+      if (state.playing && state.world) Physics.clearSpawn(state.board, state.world);
       state.rects = Core.extractRects(state.board);
     }
 
@@ -323,8 +331,6 @@
 
     // ---------- Juego ----------
     function setPlayUI(on) {
-      const ch = Array.from(document.getElementById('controls').children);
-      ch.forEach((el, i) => { if (i > 0) el.style.display = on ? 'none' : ''; });
       document.getElementById('pad').hidden = !on;
       document.getElementById('playBtn').textContent = on ? '■ Salir' : '▶ Jugar';
     }
@@ -372,6 +378,8 @@
       if ((wd.dead && wd.endT > 0.9) || (wd.won && wd.endT > 3)) Physics.respawn(wd);
       for (let i = 0; i < 2; i++) Physics.step(wd, state.board, state.input, dt / 2);
       if (wd.falls > fallsBefore) say('¡Caíste! Vuelves al inicio');
+      wd.stuckT = wd.stuck ? (wd.stuckT || 0) + dt : 0;
+      if (wd.stuckT > 0.5) say('ATASCADO: hay "sólidos" falsos. Baja la tolerancia de color o calibra más Fondo');
     }
 
     function drawCharacter(wd) {
@@ -527,6 +535,10 @@
       state.samples = []; state.lutDirty = true; state.board.scores.fill(0);
       saveCalib(); refreshPalette(); say('Calibración borrada');
     };
+    document.getElementById('tol').oninput = e => {
+      const v = parseFloat(e.target.value);
+      if (v >= 10 && v <= 60) { maxDist = v; state.lutDirty = true; state.board.scores.fill(0); saveCalib(); say('Tolerancia: ' + v); }
+    };
     document.getElementById('mcm').oninput = e => {
       const v = parseFloat(e.target.value);
       if (v >= 0.8 && v <= 10) { state.markerCm = v; newBoard(); saveCalib(); }
@@ -569,6 +581,7 @@
 
     loadCalib();
     document.getElementById('mcm').value = state.markerCm;
+    document.getElementById('tol').value = maxDist;
     newBoard();
     buildPalette();
     initLib();
