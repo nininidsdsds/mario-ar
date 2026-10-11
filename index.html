@@ -18,11 +18,11 @@
     #pad { position: fixed; left: 0; right: 0; bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end; padding: 0 16px; pointer-events: none; z-index: 5; }
     #pad[hidden] { display: none; }
     .padSide { display: flex; gap: 14px; }
-    .pb { pointer-events: auto; width: 84px; height: 84px; border-radius: 50%; font-size: 34px; margin: 0; padding: 0;
+    .pb { pointer-events: auto; width: var(--pb, 84px); height: var(--pb, 84px); border-radius: 50%; font-size: calc(var(--pb, 84px) * 0.4); margin: 0; padding: 0;
       background: rgba(0,0,0,0.45); border: 3px solid rgba(255,255,255,0.8); color: #fff;
       touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
     #pad { touch-action: none; }
-    .pb.jump { width: 104px; height: 104px; }
+    .pb.jump { width: calc(var(--pb, 84px) * 1.25); height: calc(var(--pb, 84px) * 1.25); }
     .pb.on { background: rgba(255,214,10,0.75); color: #000; }
   </style>
 </head>
@@ -57,6 +57,11 @@
       </label><br>
       <span style="color:#bbb;font-size:12px">Todo lo que NO se parece al fondo cuenta como bloque.<br>Si ves rectángulos donde no hay bloques (sombras, brillos), SUBE este número.<br>Si un bloque claro (por ejemplo blanco) no aparece, BÁJALO.</span>
     </div>
+    <div class="row">
+      <label>Tamaño de los botones:
+        <input id="padSize" type="range" min="60" max="180" step="4" value="84">
+      </label>
+    </div>
     <div class="row"><button id="clearBtn" hidden>Borrar calibración</button></div>
   </div>
 
@@ -71,7 +76,8 @@
   </div>
 
   <script src="markers-config.js?v=5"></script>
-  <script src="game-core.js?v=5"></script>
+  <script src="character-config.js?v=2"></script>
+  <script src="game-core.js?v=6"></script>
   <script src="game-physics.js?v=5"></script>
   <script>
     window.addEventListener('error', e => {
@@ -326,12 +332,117 @@
       t += ' · detectado: ' + classCounts() + ' · ' + fps.toFixed(0) + ' fps';
       if (state.playing && state.world) {
         const wd = state.world, i = state.input;
+        t += ' | sprites: ' + spriteStatus();
         t += ' | JUEGO: ' + (i.left ? '◀' : '·') + (i.right ? '▶' : '·') + (i.jump ? '▲' : '·') +
           ' suelo=' + (wd.onGround ? 'sí' : 'no') + ' x=' + wd.x.toFixed(1) + ' y=' + wd.y.toFixed(1) +
           (wd.blockedX ? ' PARED' : '') + (wd.stuck ? ' ATASCADO' : '') + ' caídas=' + wd.falls;
       }
       hud.textContent = t;
     }
+
+    // ---------- Imágenes del personaje (sprites) ----------
+    const SF = (typeof SPRITE_FILES !== 'undefined') ? SPRITE_FILES : { stand: ['sprites/stand'], run: ['sprites/run'], jump: ['sprites/jump'], win: ['sprites/win'] };
+    const SFACES = (typeof SPRITE_FACES !== 'undefined') ? SPRITE_FACES : 'right';
+    const SSCALE = (typeof SPRITE_SCALE !== 'undefined') ? SPRITE_SCALE : 1;
+    const SMODE = (typeof SPRITE_HEIGHT_MODE !== 'undefined') ? SPRITE_HEIGHT_MODE : 'same';
+    const SVER = (typeof SPRITE_VERSION !== 'undefined') ? SPRITE_VERSION : 1;
+    const SNOFLIP = (typeof SPRITE_NO_FLIP !== 'undefined') ? SPRITE_NO_FLIP : ['win'];
+    const SPR = { frames: {}, status: {}, airSince: 0 };
+    const SPR_LABEL = { stand: 'parado', run: 'correr', jump: 'saltar', win: 'victoria' };
+
+    function spriteStatus() {
+      const k = Object.keys(SPR.status);
+      return k.length ? k.map(x => (SPR_LABEL[x] || x) + ' ' + SPR.status[x]).join(', ') : 'cargando…';
+    }
+    function loadImage(url) {
+      return new Promise(res => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = () => res(null);
+        im.src = url + '?v=' + SVER;
+      });
+    }
+    // Reduce la imagen, le quita el fondo si no tiene transparencia y la recorta a lo visible
+    function prepSprite(img) {
+      const sc = Math.min(1, 512 / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * sc)), h = Math.max(1, Math.round(img.naturalHeight * sc));
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const g = c.getContext('2d', { willReadFrequently: true });
+      g.drawImage(img, 0, 0, w, h);
+      const id = g.getImageData(0, 0, w, h);
+      let opaque = true;
+      for (let i = 3; i < id.data.length; i += 4) if (id.data[i] < 250) { opaque = false; break; }
+      if (opaque) Core.removeBackground(id.data, w, h, 48);
+      const bb = Core.alphaBBox(id.data, w, h, 20);
+      if (!bb) return null;
+      g.putImageData(id, 0, 0);
+      const out = document.createElement('canvas'); out.width = bb.w; out.height = bb.h;
+      out.getContext('2d').drawImage(c, bb.x, bb.y, bb.w, bb.h, 0, 0, bb.w, bb.h);
+      return { canvas: out, w: bb.w, h: bb.h };
+    }
+    async function loadSpriteBase(base) {
+      const exts = /\.(png|jpe?g|webp)$/i.test(base) ? [''] : ['.png', '.jpg', '.jpeg', '.webp'];
+      for (const e of exts) {
+        const im = await loadImage(base + e);
+        if (im) return prepSprite(im);
+      }
+      return null;
+    }
+    async function loadSprites() {
+      for (const key of Object.keys(SF)) {
+        SPR.frames[key] = [];
+        for (const base of SF[key]) {
+          const s = await loadSpriteBase(base);
+          if (s) SPR.frames[key].push(s);
+        }
+        SPR.status[key] = SPR.frames[key].length + '/' + SF[key].length;
+      }
+    }
+    // Qué imagen toca según lo que hace el personaje
+    function pickSprite(wd, now) {
+      if (wd.onGround) SPR.airSince = 0; else if (!SPR.airSince) SPR.airSince = now;
+      const airborne = SPR.airSince && now - SPR.airSince > 90;   // evita parpadeos al pisar
+      let key = 'stand';
+      if (wd.won) key = 'win';
+      else if (airborne) key = 'jump';
+      else if (Math.abs(wd.vx) > 0.8) key = 'run';
+      let list = SPR.frames[key];
+      if (!list || !list.length) { list = SPR.frames.stand; key = 'stand'; }
+      if (!list || !list.length) return null;
+      return { img: list[list.length > 1 ? Math.floor(now / 110) % list.length : 0], key: key, frames: list.length };
+    }
+    // Dibuja la imagen con los pies en (x, y) del pizarrón, siguiendo la perspectiva local de la cámara
+    function drawSprite(wd, spr, Pt, now) {
+      const im = spr.img;
+      const stand = SPR.frames.stand && SPR.frames.stand[0];
+      let hCm = Physics.H * SSCALE;
+      if (SMODE === 'relative' && stand) hCm *= im.h / stand.h;
+      const wCm = hCm * im.w / im.h;
+      const bob = (spr.key === 'run' && spr.frames === 1) ? Math.abs(Math.sin(now / 90)) * 0.08 : 0;
+      const p0 = Pt(wd.x, wd.y - bob), px = Pt(wd.x + 1, wd.y - bob), py = Pt(wd.x, wd.y + 1 - bob);
+      ctx.save();
+      ctx.setTransform(px.x - p0.x, px.y - p0.y, py.x - p0.x, py.y - p0.y, p0.x, p0.y);
+      if (!SNOFLIP.includes(spr.key) && (wd.face > 0) !== (SFACES !== 'left')) ctx.scale(-1, 1);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(im.canvas, -wCm / 2, -hCm, wCm, hCm);
+      ctx.restore();
+    }
+
+    // ---------- Tamaño de los botones táctiles ----------
+    (function () {
+      const KEY = 'marioar_pad', pad = document.getElementById('pad'), sl = document.getElementById('padSize');
+      let v = 84, timer = null;
+      try { const r = parseInt(localStorage.getItem(KEY), 10); if (r >= 60 && r <= 180) v = r; } catch (e) {}
+      const apply = n => document.documentElement.style.setProperty('--pb', n + 'px');
+      sl.value = v; apply(v);
+      sl.oninput = () => {
+        v = parseInt(sl.value, 10); apply(v);
+        try { localStorage.setItem(KEY, String(v)); } catch (e) {}
+        pad.hidden = false;                       // vista previa de los botones mientras ajustas
+        clearTimeout(timer);
+        timer = setTimeout(() => { if (!state.playing) pad.hidden = true; }, 2500);
+      };
+    })();
 
     // ---------- Juego ----------
     function setPlayUI(on) {
@@ -412,6 +523,9 @@
       };
       const hw = Physics.W / 2, l = wd.x - hw, r = wd.x + hw, top = wd.y - Physics.H, fc = wd.face;
       ctx.globalAlpha = wd.dead ? 0.45 : 1;
+      const spr = pickSprite(wd, performance.now());
+      if (spr) drawSprite(wd, spr, Pt, performance.now());
+      else {
       quad(l, top + 1.15, r, wd.y, '#2f5bd8');                         // pantalón
       quad(l, top + 0.8, r, top + 1.15, '#e53935');                    // camiseta
       quad(l, top + 0.4, r, top + 0.8, '#f2c18d');                     // cara
@@ -419,10 +533,13 @@
       quad(fc > 0 ? wd.x : l - 0.25, top + 0.3, fc > 0 ? r + 0.25 : wd.x, top + 0.4, '#b71c1c'); // visera
       const ex = wd.x + fc * 0.3;
       quad(ex - 0.08, top + 0.5, ex + 0.08, top + 0.68, '#000');       // ojo
+      }
       ctx.globalAlpha = 1;
       // caja de colisión (línea blanca punteada): es lo que "toca" los bloques
-      tracePoly([Pt(l, top), Pt(r, top), Pt(r, wd.y), Pt(l, wd.y)]);
-      ctx.setLineDash([4, 3]); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+      if (state.showMap || !spr) {   // con imágenes, la caja de colisión solo se ve con el Mapa activado
+        tracePoly([Pt(l, top), Pt(r, top), Pt(r, wd.y), Pt(l, wd.y)]);
+        ctx.setLineDash([4, 3]); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+      }
       if (wd.won || wd.dead) {
         ctx.fillStyle = 'rgba(0,0,0,0.65)';
         ctx.fillRect(0, 40, canvas.width, 40);
@@ -622,6 +739,7 @@
     newBoard();
     buildPalette();
     initLib();
+    loadSprites();
   </script>
 </body>
 </html>
