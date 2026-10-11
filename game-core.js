@@ -420,6 +420,51 @@
     return next.map((p, i) => ({ x: prev[i].x + (p.x - prev[i].x) * a, y: prev[i].y + (p.y - prev[i].y) * a }));
   }
 
+  // ---------- Imágenes del personaje ----------
+  // Quita el fondo liso de una imagen sin transparencia (JPG, o PNG con fondo blanco): marca como transparente
+  // todo lo que se parezca al color de las esquinas Y esté conectado con el borde (así no borra, por ejemplo,
+  // el blanco de los ojos). d = bytes RGBA. Devuelve cuántos píxeles quitó.
+  function removeBackground(d, w, h, tol) {
+    const cs = [0, w - 1, (h - 1) * w, h * w - 1];
+    let r = 0, g = 0, b = 0;
+    cs.forEach(p => { r += d[p * 4]; g += d[p * 4 + 1]; b += d[p * 4 + 2]; });
+    r /= 4; g /= 4; b /= 4;
+    const t2 = tol * tol;
+    const seen = new Uint8Array(w * h), stack = new Int32Array(w * h);
+    let sp = 0, n = 0;
+    const push = p => {
+      if (seen[p]) return;
+      const i = p * 4, dr = d[i] - r, dg = d[i + 1] - g, db = d[i + 2] - b;
+      if (dr * dr + dg * dg + db * db <= t2) { seen[p] = 1; stack[sp++] = p; }
+    };
+    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+    while (sp) {
+      const p = stack[--sp];
+      d[p * 4 + 3] = 0; n++;
+      const x = p % w, y = (p - x) / w;
+      if (x > 0) push(p - 1);
+      if (x < w - 1) push(p + 1);
+      if (y > 0) push(p - w);
+      if (y < h - 1) push(p + w);
+    }
+    return n;
+  }
+
+  // Recuadro que contiene los píxeles visibles (alpha > thr). null si no hay ninguno.
+  function alphaBBox(d, w, h, thr) {
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4 + 3] > thr) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+      }
+    }
+    return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  }
+
   // Suaviza las 4 esquinas del marcador entre cuadros (menos temblor). Si se mueven mucho, salta directo.
   function smoothCorners(prev, next, alpha, snapPx) {
     const copy = next.map(p => ({ x: p.x, y: p.y }));
@@ -431,7 +476,7 @@
   }
 
   const Core = {
-    smoothCorners, smoothCornersAdaptive, similarityH, markerSide,
+    smoothCorners, smoothCornersAdaptive, similarityH, markerSide, removeBackground, alphaBBox,
     solveLinear, homography, applyH, invert3,
     boardToImage, imageToBoard, patchPoints,
     meanColor, rgbToLab, labDistance, classify, buildLUT, lutClass,
