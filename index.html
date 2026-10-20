@@ -15,14 +15,16 @@
     #calHelp { color: #bbb; font-size: 13px; line-height: 1.4; }
     input[type=number] { width: 70px; font-size: 16px; padding: 4px; }
     #playBtn { font-size: 20px; padding: 12px 28px; border-color: #34c759; }
+    #refBtn { font-size: 18px; border-color: #64d2ff; }
+    #refHelp { color: #bbb; font-size: 13px; line-height: 1.4; }
+    input[type=range] { width: 160px; vertical-align: middle; }
     #pad { position: fixed; left: 0; right: 0; bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end; padding: 0 16px; pointer-events: none; z-index: 5; }
     #pad[hidden] { display: none; }
     .padSide { display: flex; gap: 14px; }
-    .pb { pointer-events: auto; width: var(--pb, 84px); height: var(--pb, 84px); border-radius: 50%; font-size: calc(var(--pb, 84px) * 0.4); margin: 0; padding: 0;
+    .pb { pointer-events: auto; width: 84px; height: 84px; border-radius: 50%; font-size: 34px; margin: 0; padding: 0;
       background: rgba(0,0,0,0.45); border: 3px solid rgba(255,255,255,0.8); color: #fff;
-      touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
-    #pad { touch-action: none; }
-    .pb.jump { width: calc(var(--pb, 84px) * 1.25); height: calc(var(--pb, 84px) * 1.25); }
+      touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .pb.jump { width: 104px; height: 104px; }
     .pb.on { background: rgba(255,214,10,0.75); color: #000; }
   </style>
 </head>
@@ -33,11 +35,27 @@
 
   <div id="controls" hidden>
     <div class="row"><button id="playBtn">▶ Jugar</button></div>
+
+    <!-- Modo pizarrón: aparece solo cuando la cámara ve los 4 marcadores de las esquinas -->
+    <div id="boardCtl" hidden>
+      <div class="row"><button id="refBtn">📷 Guardar fondo (sin bloques)</button></div>
+      <div class="row" id="refHelp">
+        Quita TODOS los bloques del pizarrón (también el de inicio), deja solo los 4 marcadores de las esquinas,
+        mantén el teléfono quieto y pulsa el botón. Después pon los bloques.
+      </div>
+      <div class="row">
+        <label>Sensibilidad: <input id="thr" type="range" min="6" max="30" value="14"> <span id="thrV">14</span></label>
+      </div>
+      <div class="row">
+        <label>Ancho entre marcadores (cm): <input id="bw" type="number" step="0.1" min="5" max="300" value="38"></label>
+        <label>Alto (cm): <input id="bh" type="number" step="0.1" min="5" max="300" value="26"></label>
+      </div>
+    </div>
+
     <div class="row">
       <button id="calBtn">Calibrar: NO</button>
       <label><input type="checkbox" id="mapChk" checked> Mapa</label>
       <label><input type="checkbox" id="rulerChk"> Regla (1 cm)</label>
-      <label><input type="checkbox" id="perspChk"> Perspectiva</label>
     </div>
     <div class="row" id="palette" hidden></div>
     <div class="row" id="calHelp" hidden>
@@ -46,20 +64,9 @@
       Para "Fondo", toca varias zonas del pizarrón donde NO haya bloques (cielo, pasto, etc.).<br>
       Los toques de cada tipo se cuentan entre paréntesis. Con 2-3 por color suele bastar.
     </div>
-    <div class="row">
+    <div class="row" id="mcmRow">
       <label>Tamaño real del marcador de inicio (cm):
         <input id="mcm" type="number" step="0.05" min="0.8" max="10" value="1.8">
-      </label>
-    </div>
-    <div class="row">
-      <label>Tolerancia del fondo (8-50):
-        <input id="tol" type="number" step="2" min="8" max="50" value="18">
-      </label><br>
-      <span style="color:#bbb;font-size:12px">Todo lo que NO se parece al fondo cuenta como bloque.<br>Si ves rectángulos donde no hay bloques (sombras, brillos), SUBE este número.<br>Si un bloque claro (por ejemplo blanco) no aparece, BÁJALO.</span>
-    </div>
-    <div class="row">
-      <label>Tamaño de los botones:
-        <input id="padSize" type="range" min="60" max="180" step="4" value="84">
       </label>
     </div>
     <div class="row"><button id="clearBtn" hidden>Borrar calibración</button></div>
@@ -75,15 +82,11 @@
     <button id="bJump" class="pb jump">▲</button>
   </div>
 
-  <script src="markers-config.js?v=5"></script>
-  <script src="character-config.js?v=2"></script>
-  <script src="game-core.js?v=6"></script>
-  <script src="game-physics.js?v=5"></script>
+  <script src="markers-config.js"></script>
+  <script src="game-core.js"></script>
+  <script src="game-board.js"></script>
+  <script src="game-physics.js"></script>
   <script>
-    window.addEventListener('error', e => {
-      const h = document.getElementById('hud');
-      if (h) h.innerHTML = '<b style="color:#f66">Error:</b> ' + (e.message || e.error) + ' (' + (e.filename || '').split('/').pop() + ':' + e.lineno + ')';
-    });
     // ---------- Carga de la librería ArUco ----------
     function loadScript(urls) {
       return new Promise((resolve, reject) => {
@@ -107,12 +110,14 @@
     // ---------- Constantes y estado ----------
     const UNIT = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
     const MAX_W = 960;           // ancho máximo de análisis
-    const MAX_DIST = 40;         // distancia de color máxima para reconocer el tipo de un bloque calibrado
-    let bgTol = 18;              // tolerancia del fondo: lo que se parece al fondo a menos de esto NO es bloque (se ajusta en pantalla)
-    const BLOB_MAX_AREA = 150, BLOB_MAX_DIM = 22;   // manchas más grandes que esto (cm², cm) no son bloques
+    const MAX_DIST = 40;         // distancia de color máxima para aceptar una clasificación
     const MAX_PER_CLASS = 40;    // muestras máximas por tipo
     const UPDATE_EVERY = 2;      // el mapa se actualiza cada N cuadros
     const STORE_KEY = 'marioar_calib_v2';
+    const REF_KEY = 'marioar_fondo_v1';
+    const BOARD_HOLD_MS = 3000;  // tiempo sin ver las esquinas antes de volver al modo de color
+    const MAP_EVERY_MS = 180;    // en modo pizarrón el mapa se actualiza ~5 veces por segundo
+    const CAPTURE_FRAMES = 12;   // cuadros que se promedian para la foto del fondo
     const CLASS_KEYS = Object.keys(CLASSES);
     const CLASS_INDEX = {};
     CLASS_KEYS.forEach((k, i) => { CLASS_INDEX[k] = i; });
@@ -130,21 +135,63 @@
       lastImg: null, board: null, lut: null, lutDirty: true,
       rects: [], specials: new Map(), frame: 0,
       flash: null, msg: null,
-      playing: false, world: null, lastGameT: 0, sm: null, sideLen: 0, outliers: 0, persp: false,
-      input: { left: false, right: false, jump: false }
+      playing: false, world: null, lastGameT: 0, sm: null,
+      input: { left: false, right: false, jump: false },
+      // modo pizarrón
+      mode: 'start', mc: 1.8, boardT: 0, cornerSm: null,
+      boardW: BOARD_W_CM, boardH: BOARD_H_CM, thr: BOARD_THRESHOLD,
+      ref: null, capture: null, startPos: { x: 0, y: 0 }, lastMapT: 0
     };
     let detector = null;
     let lastT = performance.now(), fps = 0;
 
     function newBoard() {
       state.board = Core.createBoard(BOARD_HALF_CM, FINE_CM, CLASS_KEYS.length, EMPTY_IDX);
-      state.rects = []; state.world = null;
+      state.rects = []; state.world = null; state.specials = new Map();
+      // en modo pizarrón el bloque de inicio se busca por su marcador; en modo de color es el origen
+      state.startPos = state.mode === 'board' ? null : { x: 0, y: 0 };
       if (state.playing) stopGame();
+    }
+
+    // Cambia entre modo de color (bloque de inicio) y modo pizarrón (4 esquinas)
+    function setMode(m) {
+      if (state.mode === m) return;
+      state.mode = m;
+      newBoard();
+      applyModeUI();
+    }
+    function applyModeUI() {
+      const board = state.mode === 'board';
+      document.getElementById('boardCtl').hidden = !board;
+      document.getElementById('mcmRow').hidden = board;
+      document.getElementById('calBtn').style.display = board ? 'none' : '';
+      setCalibrating(board ? false : state.calibrating);
     }
 
     // ---------- Guardado en el navegador ----------
     function saveCalib() {
-      try { localStorage.setItem(STORE_KEY, JSON.stringify({ samples: state.samples, markerCm: state.markerCm, bgtol: bgTol })); } catch (e) {}
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify({
+          samples: state.samples, markerCm: state.markerCm, boardW: state.boardW, boardH: state.boardH, thr: state.thr
+        }));
+      } catch (e) {}
+    }
+    // La foto del fondo pesa ~120 KB; se guarda aparte para no repetirla cada vez.
+    function saveRef() {
+      try {
+        if (!state.ref || !state.ref.ready) { localStorage.removeItem(REF_KEY); return; }
+        localStorage.setItem(REF_KEY, JSON.stringify({ w: state.boardW, h: state.boardH, ref: BoardMode.referenceToJSON(state.ref) }));
+      } catch (e) { say('No pude guardar el fondo en este teléfono: dura solo hasta cerrar la página'); }
+    }
+    function loadRef() {
+      try {
+        const raw = localStorage.getItem(REF_KEY);
+        if (!raw) return;
+        const d = JSON.parse(raw);
+        if (d.w !== state.boardW || d.h !== state.boardH) return;   // otras medidas: hay que volver a guardar el fondo
+        const r = BoardMode.referenceFromJSON(d.ref, state.board);
+        if (r) state.ref = r;
+      } catch (e) {}
     }
     function loadCalib() {
       try {
@@ -154,8 +201,10 @@
         if (Array.isArray(d.samples)) {
           state.samples = d.samples.filter(s => CLASSES[s.cls] && Array.isArray(s.lab) && s.lab.length === 3);
         }
-        if (typeof d.bgtol === 'number' && d.bgtol >= 8 && d.bgtol <= 50) bgTol = d.bgtol;
         if (typeof d.markerCm === 'number' && d.markerCm >= 0.8 && d.markerCm <= 10) state.markerCm = d.markerCm;
+        if (typeof d.boardW === 'number' && d.boardW >= 5 && d.boardW <= 300) state.boardW = d.boardW;
+        if (typeof d.boardH === 'number' && d.boardH >= 5 && d.boardH <= 300) state.boardH = d.boardH;
+        if (typeof d.thr === 'number' && d.thr >= 6 && d.thr <= 30) state.thr = d.thr;
       } catch (e) {}
     }
 
@@ -203,24 +252,31 @@
 
     // ---------- Actualizar el mapa ----------
     function updateStep(img, w, h, markers) {
-      if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST, { bgTol: bgTol, fallback: CLASS_INDEX.solid, fgTol: 16 }); state.lutDirty = false; }
-      Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.markerCm, state.lut, { decay: state.playing ? 0.8 : 0.6, fillMin: 6 });
-      Core.dropBigBlobs(state.board, BLOB_MAX_AREA, BLOB_MAX_DIM);   // quita pared, piso, marco, brillos
       const now = performance.now();
+      if (state.mode === 'board') {
+        // Modo pizarrón: bloque = lo que cambió respecto a la foto del fondo vacío
+        if (!state.ref || !state.ref.ready) return;
+        BoardMode.updateDiff(state.board, state.ref, img, w, h, state.H,
+          { thr: state.thr, decay: 0.6, solidIdx: CLASS_INDEX.solid });
+      } else {
+        // Modo de color: cada bloque se reconoce por los colores calibrados
+        if (state.lutDirty) { state.lut = Core.buildLUT(state.samples, CLASS_INDEX, MAX_DIST); state.lutDirty = false; }
+        Core.updateBoard(state.board, img, w, h, state.H, state.Hinv, state.mc, state.lut, { decay: 0.6, fillMin: 6 });
+      }
       // Meta y enemigos con marcador: se recuerdan 1.5 s aunque el marcador parpadee
       markers.forEach(m => {
         if (m.id !== GOAL_ID && !ENEMY_IDS.includes(m.id)) return;
         const c = centerOf(m.corners);
-        const p = Core.imageToBoard(state.Hinv, state.markerCm, c.x, c.y);
+        const p = Core.imageToBoard(state.Hinv, state.mc, c.x, c.y);
         state.specials.set(m.id, { x: p.x, y: p.y, t: now });
       });
-      Core.stampRect(state.board, 0, 0, START_BLOCK_CM, START_BLOCK_CM, Core.START);
+      if (state.startPos) Core.stampRect(state.board, state.startPos.x, state.startPos.y, START_BLOCK_CM, START_BLOCK_CM, Core.START);
       state.specials.forEach((s, id) => {
         if (now - s.t > 1500) return;
         Core.stampRect(state.board, s.x, s.y, ENEMY_CM, ENEMY_CM, id === GOAL_ID ? Core.GOAL : CLASS_INDEX.hazard);
       });
-      if (state.playing && state.world) Physics.clearSpawn(state.board, state.world);
       state.rects = Core.extractRects(state.board);
+      if (state.playing) refreshWorld();
     }
 
     // ---------- Dibujo ----------
@@ -231,7 +287,7 @@
     }
 
     function drawBoard() {
-      const H = state.H, mc = state.markerCm, f = state.board.fine, bb = state.board.bbox;
+      const H = state.H, mc = state.mc, f = state.board.fine, bb = state.board.bbox;
       const P = (x, y) => Core.boardToImage(H, mc, x, y);
 
       // Regla: una línea cada 1 cm (más marcada cada 5 cm), para comprobar la escala
@@ -258,9 +314,18 @@
           tracePoly([P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)]);
           const color = r.cls === Core.START ? '#34c759' : r.cls === Core.GOAL ? '#bf5af2'
             : (CLASSES[CLASS_KEYS[r.cls]] ? CLASSES[CLASS_KEYS[r.cls]].color : '#fff');
-          ctx.globalAlpha = state.playing ? 0.3 : 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+          ctx.globalAlpha = 0.38; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
           ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
         });
+      }
+
+      // Modo pizarrón: se dibuja el contorno entre los 4 marcadores de las esquinas
+      if (state.mode === 'board') {
+        if (state.cornerSm) {
+          tracePoly(state.cornerSm);
+          ctx.strokeStyle = '#64d2ff'; ctx.globalAlpha = 0.7; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
+        }
+        return;
       }
 
       // Flecha "abajo del pizarrón" desde el bloque de inicio
@@ -278,7 +343,7 @@
     function drawMarkers(markers) {
       markers.forEach(m => {
         const isEnemy = ENEMY_IDS.includes(m.id);
-        const color = isEnemy ? '#ff3b30' : (m.id === START_ID ? '#34c759' : '#ffd60a');
+        const color = isEnemy ? '#ff3b30' : (m.id === START_ID ? '#34c759' : BOARD_CORNER_IDS.includes(m.id) ? '#64d2ff' : '#ffd60a');
         ctx.lineWidth = 2; ctx.strokeStyle = color;
         tracePoly(m.corners); ctx.stroke();
         const c = centerOf(m.corners);
@@ -288,17 +353,17 @@
     }
 
     // Aviso grande arriba de la imagen: dice qué falta para que funcione
-    function drawMsg(w, h) {
-      if (!state.msg || performance.now() - state.msg.t > 3500) return;
-      ctx.fillStyle = 'rgba(0,0,0,0.75)';
-      ctx.fillRect(0, h - 120, w, 40);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(state.msg.text, w / 2, h - 94);
-    }
     function drawBanner(w) {
       let text = null;
-      if (!anchorOk()) text = 'Apunta al bloque de inicio (marcador ID ' + START_ID + ')';
-      else if (!state.samples.length) text = 'SIN CALIBRAR: elige un tipo abajo y toca un bloque de ese tipo';
+      const now = performance.now();
+      if (state.capture) text = 'Guardando el fondo… no muevas el teléfono (' + state.capture.left + ')';
+      else if (!anchorOk()) text = state.mode === 'board'
+        ? 'Apunta a los 4 marcadores de las esquinas del pizarrón'
+        : 'Apunta al bloque de inicio (ID ' + START_ID + ') o a los 4 marcadores del pizarrón';
+      else if (state.mode === 'board' && !(state.ref && state.ref.ready)) text = 'Quita TODOS los bloques y pulsa "Guardar fondo"';
+      else if (state.mode === 'board' && !state.startPos) text = 'No veo el bloque de inicio (marcador ID ' + START_ID + ')';
+      else if (state.mode === 'start' && !state.samples.length) text = 'SIN CALIBRAR: elige un tipo abajo y toca un bloque de ese tipo';
+      else if (state.playing && state.msg && now - state.msg.t < 1500) text = state.msg.text;
       if (!text) return;
       ctx.fillStyle = 'rgba(0,0,0,0.65)';
       ctx.fillRect(0, 0, w, 34);
@@ -326,266 +391,48 @@
     function updateHud() {
       const now = performance.now();
       let t = (state.msg && now - state.msg.t < 2500) ? state.msg.text + ' · ' : '';
-      t += anchorOk() ? 'Inicio ✓' : 'Busca el bloque de inicio (ID ' + START_ID + ')';
-      if (!state.samples.length) t += ' · sin calibrar: pulsa "Calibrar"';
-      else t += ' · muestras: ' + state.samples.length;
-      t += ' · detectado: ' + classCounts() + ' · ' + fps.toFixed(0) + ' fps';
       if (state.playing && state.world) {
-        const wd = state.world, i = state.input;
-        t += ' | sprites: ' + spriteStatus();
-        t += ' | JUEGO: ' + (i.left ? '◀' : '·') + (i.right ? '▶' : '·') + (i.jump ? '▲' : '·') +
-          ' suelo=' + (wd.onGround ? 'sí' : 'no') + ' x=' + wd.x.toFixed(1) + ' y=' + wd.y.toFixed(1) +
-          (wd.blockedX ? ' PARED' : '') + (wd.stuck ? ' ATASCADO' : '') + ' caídas=' + wd.falls;
+        t += 'Jugando · caídas: ' + state.world.deaths + ' · saltos: ' + state.world.jumps;
+      } else if (state.mode === 'board') {
+        t += anchorOk() ? 'Pizarrón ✓' : 'Busca las 4 esquinas';
+        t += (state.ref && state.ref.ready) ? ' · fondo ✓' : ' · sin fondo';
+        t += ' · bloques: ' + state.rects.filter(r => r.cls === CLASS_INDEX.solid).length;
+      } else {
+        t += anchorOk() ? 'Inicio ✓' : 'Busca el bloque de inicio (ID ' + START_ID + ')';
+        if (!state.samples.length) t += ' · sin calibrar: pulsa "Calibrar"';
+        else t += ' · muestras: ' + state.samples.length;
+        t += ' · detectado: ' + classCounts();
       }
+      t += ' · ' + fps.toFixed(0) + ' fps';
       hud.textContent = t;
     }
 
-    // ---------- Imágenes del personaje (sprites) ----------
-    const SF = (typeof SPRITE_FILES !== 'undefined') ? SPRITE_FILES : { stand: ['sprites/stand'], run: ['sprites/run'], jump: ['sprites/jump'], win: ['sprites/win'] };
-    const SFACES = (typeof SPRITE_FACES !== 'undefined') ? SPRITE_FACES : 'right';
-    const SSCALE = (typeof SPRITE_SCALE !== 'undefined') ? SPRITE_SCALE : 1;
-    const SMODE = (typeof SPRITE_HEIGHT_MODE !== 'undefined') ? SPRITE_HEIGHT_MODE : 'same';
-    const SVER = (typeof SPRITE_VERSION !== 'undefined') ? SPRITE_VERSION : 1;
-    const SNOFLIP = (typeof SPRITE_NO_FLIP !== 'undefined') ? SPRITE_NO_FLIP : ['win'];
-    const SPR = { frames: {}, status: {}, airSince: 0 };
-    const SPR_LABEL = { stand: 'parado', run: 'correr', jump: 'saltar', win: 'victoria' };
-
-    function spriteStatus() {
-      const k = Object.keys(SPR.status);
-      return k.length ? k.map(x => (SPR_LABEL[x] || x) + ' ' + SPR.status[x]).join(', ') : 'cargando…';
-    }
-    function loadImage(url) {
-      return new Promise(res => {
-        const im = new Image();
-        im.onload = () => res(im);
-        im.onerror = () => res(null);
-        im.src = url + '?v=' + SVER;
-      });
-    }
-    // Reduce la imagen, le quita el fondo si no tiene transparencia y la recorta a lo visible
-    function prepSprite(img) {
-      const sc = Math.min(1, 512 / Math.max(img.naturalWidth, img.naturalHeight));
-      const w = Math.max(1, Math.round(img.naturalWidth * sc)), h = Math.max(1, Math.round(img.naturalHeight * sc));
-      const c = document.createElement('canvas'); c.width = w; c.height = h;
-      const g = c.getContext('2d', { willReadFrequently: true });
-      g.drawImage(img, 0, 0, w, h);
-      const id = g.getImageData(0, 0, w, h);
-      let opaque = true;
-      for (let i = 3; i < id.data.length; i += 4) if (id.data[i] < 250) { opaque = false; break; }
-      if (opaque) Core.removeBackground(id.data, w, h, 48);
-      const bb = Core.alphaBBox(id.data, w, h, 20);
-      if (!bb) return null;
-      g.putImageData(id, 0, 0);
-      const out = document.createElement('canvas'); out.width = bb.w; out.height = bb.h;
-      out.getContext('2d').drawImage(c, bb.x, bb.y, bb.w, bb.h, 0, 0, bb.w, bb.h);
-      return { canvas: out, w: bb.w, h: bb.h };
-    }
-    async function loadSpriteBase(base) {
-      const exts = /\.(png|jpe?g|webp)$/i.test(base) ? [''] : ['.png', '.jpg', '.jpeg', '.webp'];
-      for (const e of exts) {
-        const im = await loadImage(base + e);
-        if (im) return prepSprite(im);
-      }
-      return null;
-    }
-    async function loadSprites() {
-      for (const key of Object.keys(SF)) {
-        SPR.frames[key] = [];
-        for (const base of SF[key]) {
-          const s = await loadSpriteBase(base);
-          if (s) SPR.frames[key].push(s);
-        }
-        SPR.status[key] = SPR.frames[key].length + '/' + SF[key].length;
-      }
-    }
-    // Qué imagen toca según lo que hace el personaje
-    function pickSprite(wd, now) {
-      if (wd.onGround) SPR.airSince = 0; else if (!SPR.airSince) SPR.airSince = now;
-      const airborne = SPR.airSince && now - SPR.airSince > 90;   // evita parpadeos al pisar
-      let key = 'stand';
-      if (wd.won) key = 'win';
-      else if (airborne) key = 'jump';
-      else if (Math.abs(wd.vx) > 0.8) key = 'run';
-      let list = SPR.frames[key];
-      if (!list || !list.length) { list = SPR.frames.stand; key = 'stand'; }
-      if (!list || !list.length) return null;
-      return { img: list[list.length > 1 ? Math.floor(now / 110) % list.length : 0], key: key, frames: list.length };
-    }
-    // Dibuja la imagen con los pies en (x, y) del pizarrón, siguiendo la perspectiva local de la cámara
-    function drawSprite(wd, spr, Pt, now) {
-      const im = spr.img;
-      const stand = SPR.frames.stand && SPR.frames.stand[0];
-      let hCm = Physics.H * SSCALE;
-      if (SMODE === 'relative' && stand) hCm *= im.h / stand.h;
-      const wCm = hCm * im.w / im.h;
-      const bob = (spr.key === 'run' && spr.frames === 1) ? Math.abs(Math.sin(now / 90)) * 0.08 : 0;
-      const p0 = Pt(wd.x, wd.y - bob), px = Pt(wd.x + 1, wd.y - bob), py = Pt(wd.x, wd.y + 1 - bob);
-      ctx.save();
-      ctx.setTransform(px.x - p0.x, px.y - p0.y, py.x - p0.x, py.y - p0.y, p0.x, p0.y);
-      if (!SNOFLIP.includes(spr.key) && (wd.face > 0) !== (SFACES !== 'left')) ctx.scale(-1, 1);
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(im.canvas, -wCm / 2, -hCm, wCm, hCm);
-      ctx.restore();
+    // ---------- Buscar marcadores ----------
+    // En modo pizarrón los marcadores de las esquinas son grandes: se buscan en una imagen más chica (más rápido).
+    const dcv = document.createElement('canvas');
+    const dctx = dcv.getContext('2d', { willReadFrequently: true });
+    function detectMarkers(img, w, h) {
+      if (!detector) return [];
+      if (!(state.mode === 'board' && DETECT_W > 0 && w > DETECT_W * 1.05)) return detector.detect(img);
+      const dw = DETECT_W, dh = Math.round(h * DETECT_W / w);
+      if (dcv.width !== dw || dcv.height !== dh) { dcv.width = dw; dcv.height = dh; }
+      dctx.drawImage(canvas, 0, 0, dw, dh);
+      const found = detector.detect(dctx.getImageData(0, 0, dw, dh));
+      const k = w / dw;
+      found.forEach(m => { m.corners = m.corners.map(p => ({ x: p.x * k, y: p.y * k })); });
+      return found;
     }
 
-    // ---------- Tamaño de los botones táctiles ----------
-    (function () {
-      const KEY = 'marioar_pad', pad = document.getElementById('pad'), sl = document.getElementById('padSize');
-      let v = 84, timer = null;
-      try { const r = parseInt(localStorage.getItem(KEY), 10); if (r >= 60 && r <= 180) v = r; } catch (e) {}
-      const apply = n => document.documentElement.style.setProperty('--pb', n + 'px');
-      sl.value = v; apply(v);
-      sl.oninput = () => {
-        v = parseInt(sl.value, 10); apply(v);
-        try { localStorage.setItem(KEY, String(v)); } catch (e) {}
-        pad.hidden = false;                       // vista previa de los botones mientras ajustas
-        clearTimeout(timer);
-        timer = setTimeout(() => { if (!state.playing) pad.hidden = true; }, 2500);
-      };
-    })();
-
-    // ---------- Juego ----------
-    function setPlayUI(on) {
-      document.getElementById('pad').hidden = !on;
-      document.getElementById('playBtn').textContent = on ? '■ Salir' : '▶ Jugar';
+    // ---------- Foto del fondo ----------
+    function finishCapture() {
+      const n = BoardMode.finalizeReference(state.ref);
+      state.capture = null;
+      if (!n) { state.ref = null; say('No pude guardar el fondo: inténtalo otra vez'); return; }
+      state.board.scores.fill(0);
+      state.rects = [];
+      saveRef();
+      say('Fondo guardado ✓ ahora pon los bloques');
     }
-
-    function autoBackground() {
-      let n = 0;
-      [[0, -3.5], [-2, -4], [2, -4], [0, -5.5], [-2.5, -6], [2.5, -6]].forEach(p => {
-        const pts = Core.patchPoints(state.H, state.markerCm, p[0], p[1], 0.2);
-        const rgb = Core.meanColor(state.lastImg.data, canvas.width, canvas.height, pts);
-        if (rgb) { state.samples.push({ cls: 'empty', lab: Core.rgbToLab(rgb[0], rgb[1], rgb[2]) }); n++; }
-      });
-      if (n) { state.lutDirty = true; state.board.scores.fill(0); saveCalib(); refreshPalette(); }
-      return n;
-    }
-
-    function startGame() {
-      if (typeof Physics === 'undefined') { say('ERROR: no se cargó game-physics.js (súbelo junto a index.html)'); return; }
-      if (!video.srcObject) { say('Primero pulsa "Activar cámara"'); return; }
-      if (!anchorOk()) { say('Primero enfoca el bloque de inicio'); return; }
-      // Sin "Fondo" calibrado: aprende el fondo de la zona de pizarrón que está sobre el bloque de inicio.
-      if (!state.samples.some(s => s.cls === 'empty')) {
-        const n = autoBackground();
-        if (!n) { say('No pude aprender el fondo: acerca la cámara o calibra "Fondo" tocando el pizarrón'); return; }
-        say('Fondo aprendido automáticamente (' + n + ' puntos)');
-      }
-      setCalibrating(false);
-      const hasGoal = state.rects.some(r => r.cls === Core.GOAL);
-      state.world = Physics.createWorld(state.board, {
-        solid: [CLASS_INDEX.solid, CLASS_INDEX.cloud, CLASS_INDEX.question, Core.START],
-        hazard: [CLASS_INDEX.hazard],
-        goal: [Core.GOAL],
-        startCm: START_BLOCK_CM
-      });
-      state.playing = true;
-      state.lastGameT = performance.now();
-      setPlayUI(true);
-      say(hasGoal ? '¡A jugar!' : 'Aviso: no veo la meta (enfoca su marcador antes de jugar)');
-    }
-
-    function stopGame() {
-      state.playing = false;
-      state.world = null;
-      setPadState({});
-      if (state.prevMap !== undefined) {
-        state.showMap = state.prevMap;
-        document.getElementById('mapChk').checked = state.prevMap;
-      }
-      setPlayUI(false);
-    }
-
-    function gameTick(now) {
-      const wd = state.world;
-      if (!wd) return;
-      const dt = Math.min(0.05, (now - state.lastGameT) / 1000);
-      state.lastGameT = now;
-      // el "fondo" es lo más bajo que hay en el mapa + 12 cm
-      let maxY = 1;
-      for (const r of state.rects) if (r.iy1 * state.board.fine > maxY) maxY = r.iy1 * state.board.fine;
-      wd.fallY = maxY + 12;
-      const fallsBefore = wd.falls;
-      if ((wd.dead && wd.endT > 0.9) || (wd.won && wd.endT > 3)) Physics.respawn(wd);
-      for (let i = 0; i < 2; i++) Physics.step(wd, state.board, state.input, dt / 2);
-      if (wd.falls > fallsBefore) say('¡Caíste! Vuelves al inicio');
-      wd.stuckT = wd.stuck ? (wd.stuckT || 0) + dt : 0;
-      if (wd.stuckT > 0.5) say('ATASCADO: hay "sólidos" falsos. Baja la tolerancia de color o calibra más Fondo');
-    }
-
-    function drawCharacter(wd) {
-      const H = state.H, mc = state.markerCm;
-      const Pt = (x, y) => Core.boardToImage(H, mc, x, y);
-      const quad = (x0, y0, x1, y1, color) => {
-        tracePoly([Pt(x0, y0), Pt(x1, y0), Pt(x1, y1), Pt(x0, y1)]);
-        ctx.fillStyle = color; ctx.fill();
-        ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
-      };
-      const hw = Physics.W / 2, l = wd.x - hw, r = wd.x + hw, top = wd.y - Physics.H, fc = wd.face;
-      ctx.globalAlpha = wd.dead ? 0.45 : 1;
-      const spr = pickSprite(wd, performance.now());
-      if (spr) drawSprite(wd, spr, Pt, performance.now());
-      else {
-      quad(l, top + 1.15, r, wd.y, '#2f5bd8');                         // pantalón
-      quad(l, top + 0.8, r, top + 1.15, '#e53935');                    // camiseta
-      quad(l, top + 0.4, r, top + 0.8, '#f2c18d');                     // cara
-      quad(l, top, r, top + 0.4, '#e53935');                           // gorra
-      quad(fc > 0 ? wd.x : l - 0.25, top + 0.3, fc > 0 ? r + 0.25 : wd.x, top + 0.4, '#b71c1c'); // visera
-      const ex = wd.x + fc * 0.3;
-      quad(ex - 0.08, top + 0.5, ex + 0.08, top + 0.68, '#000');       // ojo
-      }
-      ctx.globalAlpha = 1;
-      // caja de colisión (línea blanca punteada): es lo que "toca" los bloques
-      if (state.showMap || !spr) {   // con imágenes, la caja de colisión solo se ve con el Mapa activado
-        tracePoly([Pt(l, top), Pt(r, top), Pt(r, wd.y), Pt(l, wd.y)]);
-        ctx.setLineDash([4, 3]); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
-      }
-      if (wd.won || wd.dead) {
-        ctx.fillStyle = 'rgba(0,0,0,0.65)';
-        ctx.fillRect(0, 40, canvas.width, 40);
-        ctx.fillStyle = wd.won ? '#bf5af2' : '#ff453a';
-        ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(wd.won ? '¡LLEGASTE A LA META!' : '¡Perdiste!', canvas.width / 2, 68);
-      }
-    }
-
-    // Controles táctiles: se leen los dedos que están sobre cada botón (multitoque, se puede deslizar de ◀ a ▶).
-    const PAD_KEYS = { bLeft: 'left', bRight: 'right', bJump: 'jump' };
-    function setPadState(active) {
-      Object.keys(PAD_KEYS).forEach(id => {
-        const k = PAD_KEYS[id];
-        state.input[k] = !!active[k];
-        document.getElementById(id).classList.toggle('on', !!active[k]);
-      });
-    }
-    function padFromTouches(touchList) {
-      const active = { left: false, right: false, jump: false };
-      for (let i = 0; i < touchList.length; i++) {
-        const t = touchList[i];
-        const el = document.elementFromPoint(t.clientX, t.clientY);
-        const btn = el && el.closest ? el.closest('.pb') : null;
-        if (btn && PAD_KEYS[btn.id]) active[PAD_KEYS[btn.id]] = true;
-      }
-      setPadState(active);
-    }
-    const padEl = document.getElementById('pad');
-    ['touchstart', 'touchmove'].forEach(t => padEl.addEventListener(t, e => { e.preventDefault(); padFromTouches(e.touches); }, { passive: false }));
-    ['touchend', 'touchcancel'].forEach(t => padEl.addEventListener(t, e => { e.preventDefault(); padFromTouches(e.touches); }, { passive: false }));
-    padEl.addEventListener('contextmenu', e => e.preventDefault());
-    // Ratón (solo para probar en computador; el dedo usa los eventos táctiles de arriba)
-    Object.keys(PAD_KEYS).forEach(id => {
-      const el = document.getElementById(id), k = PAD_KEYS[id];
-      const on = e => { if (e.pointerType !== 'mouse') return; e.preventDefault(); state.input[k] = true; el.classList.add('on'); };
-      const off = e => { if (e.pointerType !== 'mouse') return; state.input[k] = false; el.classList.remove('on'); };
-      el.addEventListener('pointerdown', on);
-      ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, off));
-    });
-    document.getElementById('playBtn').onclick = () => { try { state.playing ? stopGame() : startGame(); } catch (e) { say('ERROR: ' + e.message); console.error(e); } };
-
-    // Teclado (para probar en computador)
-    const KEYMAP = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'jump', ' ': 'jump', a: 'left', d: 'right', w: 'jump' };
-    window.addEventListener('keydown', e => { if (KEYMAP[e.key]) { state.input[KEYMAP[e.key]] = true; e.preventDefault(); } });
-    window.addEventListener('keyup', e => { if (KEYMAP[e.key]) state.input[KEYMAP[e.key]] = false; });
 
     // ---------- Bucle principal ----------
     function loop() {
@@ -598,44 +445,60 @@
         const img = ctx.getImageData(0, 0, w, h);
         state.lastImg = img;
 
-        const markers = detector ? detector.detect(img) : [];
-        const anchor = markers.find(m => m.id === START_ID);
         const now = performance.now();
-        if (anchor) {
-          // Un cuadro con el marcador de tamaño muy distinto al anterior es una detección mala: se ignora
-          // (salvo que se repita 4 veces seguidas, entonces el cambio es real).
-          const cand = anchorCorners(anchor);
-          const side = Core.markerSide(cand);
-          let accept = true;
-          if (state.sideLen && (now - state.lastAnchorT) < 700) {
-            const ratio = side / state.sideLen;
-            if (ratio < 0.8 || ratio > 1.25) {
-              state.outliers++;
-              if (state.outliers < 4) accept = false; else state.sm = null;
-            } else state.outliers = 0;
+        const markers = detectMarkers(img, w, h);
+        let lock = false;
+
+        // 1) ¿Se ven los 4 marcadores de las esquinas? Entonces manda el modo pizarrón.
+        const cc = BOARD_CORNER_IDS.map(id => { const m = markers.find(mm => mm.id === id); return m ? centerOf(m.corners) : null; });
+        if (cc.every(Boolean)) {
+          state.cornerSm = Core.smoothCorners(state.cornerSm, cc, 0.6, 25);
+          const g = BoardMode.boardHomography(state.cornerSm, state.boardW, state.boardH);
+          if (g) {
+            if (state.mode !== 'board') setMode('board');
+            state.H = g.H; state.Hinv = g.Hinv; state.mc = 1;
+            state.lastAnchorT = now; state.boardT = now; lock = true;
           }
-          if (accept) {
-            state.outliers = 0;
-            state.sm = Core.smoothCornersAdaptive(state.sm, cand);
-            state.sideLen = Core.markerSide(state.sm);
-            const H = state.persp ? Core.homography(UNIT, state.sm) : Core.similarityH(state.sm);
-            const Hinv = H && Core.invert3(H);
-            if (H && Hinv) { state.H = H; state.Hinv = Hinv; state.lastAnchorT = now; }
-          } else if (state.H) state.lastAnchorT = now;
         }
+        // 2) Si no, el bloque de inicio sirve de ancla (modo de color)
+        if (!lock && !(state.mode === 'board' && now - state.boardT < BOARD_HOLD_MS)) {
+          const anchor = markers.find(m => m.id === START_ID);
+          if (anchor) {
+            state.sm = Core.smoothCorners(state.sm, anchorCorners(anchor), 0.6, 20);
+            const H = Core.homography(UNIT, state.sm);
+            const Hinv = H && Core.invert3(H);
+            if (H && Hinv) {
+              if (state.mode !== 'start') setMode('start');
+              state.mc = state.markerCm; state.H = H; state.Hinv = Hinv; state.lastAnchorT = now;
+            }
+          }
+        }
+        // 3) En modo pizarrón, el bloque de inicio se ubica por su marcador (centro del cubo)
+        if (lock) {
+          const sm = markers.find(m => m.id === START_ID);
+          if (sm) {
+            const c = centerOf(sm.corners), p = Core.imageToBoard(state.Hinv, 1, c.x, c.y), sp = state.startPos;
+            if (!sp || Math.hypot(p.x - sp.x, p.y - sp.y) > 1.5) state.startPos = { x: p.x, y: p.y };
+            else state.startPos = { x: sp.x + (p.x - sp.x) * 0.3, y: sp.y + (p.y - sp.y) * 0.3 };
+          }
+        }
+        // 4) Foto del fondo: se promedian varios cuadros (cada uno se alinea con las esquinas)
+        if (state.capture && lock) {
+          BoardMode.accumulate(state.ref, img, w, h, state.H);
+          if (--state.capture.left <= 0) finishCapture();
+        }
+
         if (anchorOk()) {
           state.frame++;
-          // El mapa sigue actualizándose mientras juegas (el personaje se dibuja encima, no lo ve la cámara)
-          if (state.frame % UPDATE_EVERY === 0) updateStep(img, w, h, markers);
+          const due = state.mode === 'board' ? (now - state.lastMapT >= MAP_EVERY_MS) : (state.frame % UPDATE_EVERY === 0);
+          if (due && !state.capture) { state.lastMapT = now; updateStep(img, w, h, markers); }
           drawBoard();
-          if (state.playing && state.world) { gameTick(now); drawCharacter(state.world); }
-        } else if (state.playing) {
-          state.lastGameT = now;   // pausa si se pierde el bloque de inicio
-        }
+          if (state.playing) stepGame(now);
+          drawPlayer();
+        } else if (state.playing) state.lastGameT = now;
         drawMarkers(markers);
         drawFlash();
         drawBanner(w);
-        drawMsg(w, h);
 
         fps = fps * 0.9 + (1000 / Math.max(1, now - lastT)) * 0.1;
         lastT = now;
@@ -646,16 +509,16 @@
 
     // ---------- Calibrar tocando la pantalla ----------
     canvas.addEventListener('pointerdown', ev => {
-      if (!state.calibrating) return;
+      if (!state.calibrating || state.mode === 'board') return;
       if (!anchorOk() || !state.lastImg) { say('Primero enfoca el bloque de inicio'); return; }
       const r = canvas.getBoundingClientRect();
       const x = (ev.clientX - r.left) * canvas.width / r.width;
       const y = (ev.clientY - r.top) * canvas.height / r.height;
-      const bp = Core.imageToBoard(state.Hinv, state.markerCm, x, y);
+      const bp = Core.imageToBoard(state.Hinv, state.mc, x, y);
       if (Math.abs(bp.x) <= START_BLOCK_CM / 2 && Math.abs(bp.y) <= START_BLOCK_CM / 2) {
         say('Ese es el bloque de inicio: toca otro'); return;
       }
-      const pts = Core.patchPoints(state.H, state.markerCm, bp.x, bp.y, 0.2);
+      const pts = Core.patchPoints(state.H, state.mc, bp.x, bp.y, 0.2);
       const rgb = Core.meanColor(state.lastImg.data, canvas.width, canvas.height, pts);
       if (!rgb) { say('Ese punto queda muy al borde'); return; }
       const cls = state.activeClass;
@@ -673,6 +536,117 @@
       say('Guardado: ' + CLASSES[cls].label);
     });
 
+    // ---------- Juego: el personaje ----------
+    const SOLID_IDX = SOLID_CLASSES.map(k => CLASS_INDEX[k]).concat([Core.START]);
+
+    // Pasa el mapa de bloques a la física. false si todavía no hay nada sólido donde pisar.
+    function refreshWorld() {
+      const mask = Physics.buildMask(state.board, SOLID_IDX);
+      if (state.world) return Physics.setMask(state.world, mask);
+      const sp = state.startPos;
+      if (!sp) return false;
+      state.world = Physics.createWorld(mask, state.board.fine, state.board.nx,
+        { x: sp.x, y: sp.y - START_BLOCK_CM / 2 }, PHYSICS_OPTS);
+      return !!state.world;
+    }
+
+    function startGame() {
+      if (!anchorOk()) { say('Primero enfoca el pizarrón o el bloque de inicio'); return; }
+      if (state.mode === 'board' && !(state.ref && state.ref.ready)) { say('Primero guarda el fondo'); return; }
+      state.world = null;
+      if (!refreshWorld()) { say('Aún no veo bloques: pon el bloque de inicio y algo donde pisar'); return; }
+      setCalibrating(false);
+      state.playing = true; state.lastGameT = performance.now();
+      document.getElementById('pad').hidden = false;
+      document.getElementById('playBtn').textContent = '■ Detener';
+      say('¡A jugar!');
+    }
+
+    function stopGame() {
+      state.playing = false; state.world = null;
+      document.getElementById('pad').hidden = true;
+      document.getElementById('playBtn').textContent = '▶ Jugar';
+      state.input.left = state.input.right = state.input.jump = false;
+      document.querySelectorAll('.pb').forEach(b => b.classList.remove('on'));
+    }
+
+    function stepGame(now) {
+      const w = state.world;
+      if (!w) return;
+      const dt = Math.min(0.1, (now - state.lastGameT) / 1000);
+      state.lastGameT = now;
+      const d0 = w.deaths;
+      Physics.update(w, state.input, dt);
+      if (w.deaths > d0) say('¡Se cayó! Caídas: ' + w.deaths);
+    }
+
+    function rrect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    // Personaje de ejemplo (uno inventado): se dibuja en cm, con los pies en (0,0), siguiendo la perspectiva del pizarrón.
+    function drawPlayer() {
+      const w = state.world;
+      if (!state.playing || !w || w.deadT > 0) return;
+      if (w.blink > 0 && Math.floor(w.time * 14) % 2) return;       // parpadea un instante al reaparecer
+      const H = state.H, mc = state.mc;
+      const o = Core.boardToImage(H, mc, w.x, w.y);
+      const px = Core.boardToImage(H, mc, w.x + 1, w.y);
+      const py = Core.boardToImage(H, mc, w.x, w.y + 1);
+      ctx.save();
+      ctx.transform(px.x - o.x, px.y - o.y, py.x - o.x, py.y - o.y, o.x, o.y);
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';                              // sombra
+      ctx.beginPath(); ctx.ellipse(0, 0.02, 0.62, 0.13, 0, 0, Math.PI * 2); ctx.fill();
+      const air = !w.onGround;
+      const stretch = air ? 1 + Math.min(0.22, Math.abs(w.vy) / 220) : 1;
+      ctx.scale(w.facing / Math.sqrt(stretch), stretch);
+      const run = (!air && Math.abs(w.vx) > 1.5) ? Math.sin(w.time * 16) * 0.28 : 0;
+      ctx.lineJoin = 'round';
+      rrect(-0.65, -1.62, 1.3, 1.38, 0.45);                           // cuerpo
+      ctx.fillStyle = '#2ec4b6'; ctx.fill();
+      ctx.strokeStyle = '#0f5a54'; ctx.lineWidth = 0.1; ctx.stroke();
+      ctx.fillStyle = '#c4f4ee';                                      // pancita
+      ctx.beginPath(); ctx.ellipse(0.02, -0.78, 0.4, 0.42, 0, 0, Math.PI * 2); ctx.fill();
+      [0.02, 0.44].forEach(ex => {                                    // ojos (miran hacia donde va)
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(ex, -1.2, 0.23, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#12303a';
+        ctx.beginPath(); ctx.arc(ex + 0.08, -1.2, 0.11, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.fillStyle = '#f2a541'; ctx.strokeStyle = '#8a5a14'; ctx.lineWidth = 0.07;   // patas
+      [-1, 1].forEach(s => {
+        ctx.beginPath(); ctx.ellipse(s * 0.32 + s * run, -0.12 - (air ? 0.12 : 0), 0.3, 0.17, 0, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      });
+      ctx.strokeStyle = '#0f5a54'; ctx.lineWidth = 0.09;              // antena
+      ctx.beginPath(); ctx.moveTo(0, -1.62); ctx.lineTo(0.14, -2.0); ctx.stroke();
+      ctx.fillStyle = '#ff5d73';
+      ctx.beginPath(); ctx.arc(0.15, -2.06, 0.15, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // Botones táctiles (se pueden apretar varios a la vez) y teclado (para probar en el computador)
+    function bindPad(id, key) {
+      const el = document.getElementById(id);
+      const on = e => { e.preventDefault(); state.input[key] = true; el.classList.add('on'); try { el.setPointerCapture(e.pointerId); } catch (_) {} };
+      const off = e => { e.preventDefault(); state.input[key] = false; el.classList.remove('on'); };
+      el.addEventListener('pointerdown', on);
+      el.addEventListener('pointerup', off);
+      el.addEventListener('pointercancel', off);
+      el.addEventListener('lostpointercapture', off);
+      el.addEventListener('contextmenu', e => e.preventDefault());
+    }
+    bindPad('bLeft', 'left'); bindPad('bRight', 'right'); bindPad('bJump', 'jump');
+    const KEYMAP = { ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right', ArrowUp: 'jump', ' ': 'jump', w: 'jump', W: 'jump' };
+    window.addEventListener('keydown', e => { const k = KEYMAP[e.key]; if (k && state.playing) { state.input[k] = true; e.preventDefault(); } });
+    window.addEventListener('keyup', e => { const k = KEYMAP[e.key]; if (k) state.input[k] = false; });
+
     // ---------- Botones ----------
     function setCalibrating(on) {
       state.calibrating = on;
@@ -683,20 +657,43 @@
     }
     document.getElementById('calBtn').onclick = () => setCalibrating(!state.calibrating);
     document.getElementById('mapChk').onchange = e => { state.showMap = e.target.checked; };
-    document.getElementById('perspChk').onchange = e => { state.persp = e.target.checked; state.sm = null; newBoard(); };
     document.getElementById('rulerChk').onchange = e => { state.showRuler = e.target.checked; };
     document.getElementById('clearBtn').onclick = () => {
       state.samples = []; state.lutDirty = true; state.board.scores.fill(0);
       saveCalib(); refreshPalette(); say('Calibración borrada');
     };
-    document.getElementById('tol').oninput = e => {
-      const v = parseFloat(e.target.value);
-      if (v >= 8 && v <= 50) { bgTol = v; state.lutDirty = true; state.board.scores.fill(0); saveCalib(); say('Tolerancia del fondo: ' + v); }
-    };
     document.getElementById('mcm').oninput = e => {
       const v = parseFloat(e.target.value);
       if (v >= 0.8 && v <= 10) { state.markerCm = v; newBoard(); saveCalib(); }
     };
+    document.getElementById('playBtn').onclick = () => (state.playing ? stopGame() : startGame());
+
+    // Modo pizarrón: guardar el fondo, sensibilidad y medidas
+    document.getElementById('refBtn').onclick = () => {
+      if (state.capture) { state.capture = null; say('Cancelado'); return; }
+      if (state.mode !== 'board' || !anchorOk()) { say('Primero enfoca los 4 marcadores de las esquinas'); return; }
+      if (state.playing) stopGame();
+      state.ref = BoardMode.createReference(state.board, state.boardW, state.boardH, 3);
+      state.capture = { left: CAPTURE_FRAMES };
+      state.rects = [];
+      say('Guardando fondo…');
+    };
+    document.getElementById('thr').oninput = e => {
+      state.thr = parseFloat(e.target.value);
+      document.getElementById('thrV').textContent = e.target.value;
+      saveCalib();
+    };
+    function setBoardSize() {
+      const w = parseFloat(document.getElementById('bw').value), h = parseFloat(document.getElementById('bh').value);
+      if (!(w >= 5 && w <= 300 && h >= 5 && h <= 300)) return;
+      if (w === state.boardW && h === state.boardH) return;
+      state.boardW = w; state.boardH = h; state.ref = null; state.capture = null;
+      try { localStorage.removeItem(REF_KEY); } catch (e) {}
+      newBoard(); saveCalib();
+      say('Cambiaste las medidas: guarda el fondo otra vez');
+    }
+    document.getElementById('bw').oninput = setBoardSize;
+    document.getElementById('bh').oninput = setBoardSize;
 
     document.getElementById('btn').addEventListener('click', async () => {
       try {
@@ -735,11 +732,15 @@
 
     loadCalib();
     document.getElementById('mcm').value = state.markerCm;
-    document.getElementById('tol').value = bgTol;
+    document.getElementById('bw').value = state.boardW;
+    document.getElementById('bh').value = state.boardH;
+    document.getElementById('thr').value = state.thr;
+    document.getElementById('thrV').textContent = state.thr;
+    state.mc = state.markerCm;
     newBoard();
+    loadRef();
     buildPalette();
     initLib();
-    loadSprites();
   </script>
 </body>
 </html>
