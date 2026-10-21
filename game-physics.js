@@ -1,171 +1,200 @@
-// Física del personaje (sin cámara ni pantalla). Todo en centímetros del pizarrón:
-// origen = centro del marcador de inicio, x a la derecha, y hacia ABAJO.
-// Usa el mapa de Core.createBoard (board.cls) como "suelo": cada píxel fino es sólido, peligro, meta o vacío.
+// Física del personaje (sin cámara ni pantalla): se puede probar en Node.
+// Todo va en centímetros sobre el pizarrón: x → derecha, y → abajo.
+// El personaje se ubica por el centro de sus pies (x, y); su caja va de (x - ancho/2, y - alto) a (x + ancho/2, y).
+// El nivel es una máscara de "píxeles finos" (la misma cuadrícula del mapa): 1 = sólido, 0 = aire.
 (function (root) {
   'use strict';
 
-  const P = {
-    W: 1.0, H: 1.6,            // tamaño del personaje (cm)
-    SPEED: 8,                  // velocidad al correr (cm/s)
-    ACCEL: 70, AIR_ACCEL: 45, FRICTION: 90,
-    GRAVITY: 80,               // cm/s²
-    JUMP_V: 30,                // salto ≈ 5.6 cm de alto: sube a un bloque de 2 cm (y a uno de 4 cm)
-    MAX_FALL: 45,
-    CUT: 0.6,                 // al soltar el botón el salto se corta
-    COYOTE: 0.1, BUFFER: 0.12, // margen para saltar justo al borde / justo antes de aterrizar
-    STEP_UP: 1.0,              // sube solo desniveles pequeños (bloques imanados no perfectamente alineados)
-    EPS: 1e-4
+  const DEFAULTS = {
+    charW: 1.3, charH: 1.8,          // tamaño del personaje (cm)
+    runSpeed: 10,                    // velocidad máxima al correr (cm/s)
+    groundAccel: 100, airAccel: 70,  // aceleración (cm/s²)
+    groundFriction: 140, airFriction: 20,
+    gravity: 130,                    // cm/s²
+    jumpHeight: 4.4,                 // altura del salto (cm), alrededor de 2 bloques
+    maxFall: 70,                     // velocidad máxima de caída (cm/s)
+    coyote: 0.09,                    // segundos que aún puedes saltar después de salir de un borde
+    buffer: 0.12,                    // segundos que se "recuerda" un toque de salto antes de aterrizar
+    stepUp: 0.4,                     // desniveles de hasta 0.4 cm se suben solos (tapa el ruido del mapa)
+    fallMargin: 5,                   // cm bajo el bloque más bajo para dar por perdido al personaje
+    sideMargin: 15,                  // cm a los lados del nivel antes de dar por perdido al personaje
+    respawnDelay: 0.7                // segundos antes de reaparecer
   };
 
-  function makeLut(list) {
+  const DT = 1 / 120;      // paso fijo de la simulación
+  const STEP = 0.05;       // cm: el movimiento se hace en pasitos para no atravesar paredes
+
+  // Máscara de sólidos a partir del mapa. solidClasses = índices de tipo que se pisan.
+  function buildMask(board, solidClasses) {
     const lut = new Uint8Array(256);
-    (list || []).forEach(i => { lut[i] = 1; });
-    return lut;
+    solidClasses.forEach(c => { lut[c] = 1; });
+    const m = new Uint8Array(board.cls.length);
+    for (let i = 0; i < m.length; i++) m[i] = lut[board.cls[i]];
+    return m;
   }
 
-  function createWorld(board, cfg) {
-    const f = board.fine;
-    let maxIy = 0;
-    for (let iy = -board.nx; iy <= board.nx; iy++) {
-      for (let ix = -board.nx; ix <= board.nx; ix++) {
-        if (board.cls[(iy + board.nx) * board.W + (ix + board.nx)] !== board.emptyIdx && iy > maxIy) maxIy = iy;
-      }
-    }
-    const iyTop = Math.ceil((-cfg.startCm / 2) / f);          // fila superior del bloque de inicio
-    const goalVal = (cfg.goal && cfg.goal[0] !== undefined) ? cfg.goal[0] : -1;
-    const w = {
-      w: P.W, h: P.H, startCm: cfg.startCm, goalVal: goalVal,
-      solid: makeLut(cfg.solid), hazard: makeLut(cfg.hazard), goal: makeLut(cfg.goal),
-      spawnX: 0, spawnY: (iyTop - 0.5) * f - 0.01,
-      fallY: maxIy * f + 12,
-      x: 0, y: 0, vx: 0, vy: 0, face: 1, onGround: false,
-      coyote: 0, buffer: 0, prevJump: false,
-      dead: false, won: false, endT: 0, stuck: 0, blockedX: false, falls: 0
-    };
-    clearSpawn(board, w);
-    respawn(w);
-    return w;
+  function solidAt(w, ix, iy) {
+    if (ix < -w.nx || ix > w.nx || iy < -w.nx || iy > w.nx) return false;
+    return w.mask[(iy + w.nx) * w.W + (ix + w.nx)] === 1;
   }
 
-  // Despeja el aire sobre el bloque de inicio (2 cm de ancho, 5 cm de alto): si la cámara ensucia ahí el mapa
-  // con "sólidos" falsos, el personaje quedaría atrapado. Se repite en cada actualización del mapa.
-  function clearSpawn(board, w) {
-    const f = board.fine, nx = board.nx;
-    const iyTop = Math.ceil((-w.startCm / 2) / f);
-    const cx = Math.ceil(1.0 / f), cy = Math.ceil(5.0 / f);
-    for (let iy = iyTop - cy; iy < iyTop; iy++) {
-      for (let ix = -cx; ix <= cx; ix++) {
-        const k = (iy + nx) * board.W + (ix + nx);
-        if (board.cls[k] !== w.goalVal) board.cls[k] = board.emptyIdx;
-      }
-    }
-  }
-
-  function respawn(w) {
-    w.x = w.spawnX; w.y = w.spawnY; w.vx = 0; w.vy = 0; w.face = 1;
-    w.onGround = false; w.coyote = 0; w.buffer = 0; w.prevJump = false;
-    w.dead = false; w.won = false; w.endT = 0;
-  }
-
-  // ¿La caja del personaje en (x, y=pies) toca alguna celda de esa tabla?
-  function hit(w, b, x, y, lut, s) {
-    const f = b.fine, nx = b.nx;
-    const l = x - w.w / 2 + s, r = x + w.w / 2 - s, t = y - w.h + s, bt = y - s;
-    const i0 = Math.floor(l / f - 0.5) + 1, i1 = Math.ceil(r / f + 0.5) - 1;
-    const j0 = Math.floor(t / f - 0.5) + 1, j1 = Math.ceil(bt / f + 0.5) - 1;
-    for (let j = j0; j <= j1; j++) {
-      if (j < -nx || j > nx) continue;
-      for (let i = i0; i <= i1; i++) {
-        if (i < -nx || i > nx) continue;
-        if (lut[b.cls[(j + nx) * b.W + (i + nx)]]) return true;
-      }
+  // ¿La caja del personaje, puesta con los pies en (x, y), toca algún sólido?
+  function overlaps(w, x, y) {
+    const f = w.fine, hw = w.p.charW / 2;
+    const ix0 = Math.floor((x - hw) / f + 0.5);
+    const ix1 = Math.floor((x + hw - 1e-6) / f + 0.5);
+    const iy0 = Math.floor((y - w.p.charH) / f + 0.5);
+    const iy1 = Math.floor((y - 1e-6) / f + 0.5);
+    for (let iy = iy0; iy <= iy1; iy++) {
+      for (let ix = ix0; ix <= ix1; ix++) if (solidAt(w, ix, iy)) return true;
     }
     return false;
   }
 
-  function moveX(w, b, d) {
-    const n = Math.max(1, Math.ceil(Math.abs(d) / 0.1)), s = d / n;
-    for (let k = 0; k < n; k++) {
-      if (!hit(w, b, w.x + s, w.y, w.solid, P.EPS)) { w.x += s; continue; }
-      if (w.onGround) {
-        let ok = false;
-        for (let u = 0.1; u <= P.STEP_UP + 1e-9; u += 0.1) {
-          if (!hit(w, b, w.x + s, w.y - u, w.solid, P.EPS)) { w.x += s; w.y -= u; ok = true; break; }
+  // Límites del nivel (hasta dónde llegan los sólidos). null si no hay ninguno.
+  function computeLimits(mask, fine, nx, p) {
+    const W = 2 * nx + 1;
+    let minX = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
+    for (let iy = -nx; iy <= nx; iy++) {
+      for (let ix = -nx; ix <= nx; ix++) {
+        if (mask[(iy + nx) * W + (ix + nx)] === 1) {
+          n++;
+          if (ix < minX) minX = ix;
+          if (ix > maxX) maxX = ix;
+          if (iy > maxY) maxY = iy;
         }
-        if (ok) continue;
       }
-      let lo = 0, hi = s;
-      for (let i = 0; i < 6; i++) {
-        const m = (lo + hi) / 2;
-        if (hit(w, b, w.x + m, w.y, w.solid, P.EPS)) hi = m; else lo = m;
+    }
+    if (!n) return null;
+    return {
+      minX: (minX - 0.5) * fine - p.sideMargin,
+      maxX: (maxX + 0.5) * fine + p.sideMargin,
+      maxY: (maxY + 0.5) * fine + p.fallMargin
+    };
+  }
+
+  // Cambia el mapa de sólidos de un mundo ya creado (cuando la cámara ve algo nuevo). false si no hay sólidos.
+  function setMask(w, mask) {
+    const lim = computeLimits(mask, w.fine, w.nx, w.p);
+    if (!lim) return false;
+    w.mask = mask; w.limits = lim;
+    return true;
+  }
+
+  // Crea el mundo. spawn = {x, y} (pies) donde aparece el personaje. Devuelve null si no hay ningún sólido.
+  function createWorld(mask, fine, nx, spawn, opts) {
+    const p = Object.assign({}, DEFAULTS, opts || {});
+    const W = 2 * nx + 1;
+    const limits = computeLimits(mask, fine, nx, p);
+    if (!limits) return null;
+    const w = {
+      mask, fine, nx, W, p,
+      v0: Math.sqrt(2 * p.gravity * p.jumpHeight),
+      limits,
+      spawn: { x: spawn.x, y: spawn.y },
+      x: 0, y: 0, vx: 0, vy: 0, onGround: false, facing: 1,
+      coyoteT: 0, bufferT: 0, prevJump: false,
+      deadT: 0, deaths: 0, jumps: 0, blink: 0, acc: 0, time: 0, lastEvent: null
+    };
+    respawn(w, true);
+    return w;
+  }
+
+  function respawn(w, first) {
+    w.x = w.spawn.x; w.y = w.spawn.y;
+    w.vx = 0; w.vy = 0; w.onGround = false; w.coyoteT = 0; w.bufferT = 0; w.deadT = 0;
+    // si hay algo encima del bloque de inicio, sube hasta encontrar espacio libre
+    for (let i = 0; i < 40 && overlaps(w, w.x, w.y); i++) w.y -= 0.25;
+    w.blink = first ? 0 : 0.6;
+  }
+
+  function moveX(w, dx) {
+    const n = Math.ceil(Math.abs(dx) / STEP);
+    if (!n) return;
+    const sx = dx / n;
+    for (let i = 0; i < n; i++) {
+      if (!overlaps(w, w.x + sx, w.y)) { w.x += sx; continue; }
+      // ¿es un escalón pequeño? entonces se sube solo
+      let stepped = false;
+      if (w.onGround) {
+        for (let up = STEP; up <= w.p.stepUp + 1e-9; up += STEP) {
+          if (!overlaps(w, w.x + sx, w.y - up)) { w.x += sx; w.y -= up; stepped = true; break; }
+        }
       }
-      w.x += lo; w.vx = 0; w.blockedX = true;
+      if (!stepped) { w.vx = 0; return; }
+    }
+  }
+
+  function moveY(w, dy) {
+    const n = Math.ceil(Math.abs(dy) / STEP);
+    if (!n) return;
+    const sy = dy / n;
+    for (let i = 0; i < n; i++) {
+      if (!overlaps(w, w.x, w.y + sy)) { w.y += sy; continue; }
+      w.vy = 0;      // golpeó el piso o el techo
       return;
     }
   }
 
-  // devuelve true si chocó
-  function moveY(w, b, d) {
-    const n = Math.max(1, Math.ceil(Math.abs(d) / 0.1)), s = d / n;
-    for (let k = 0; k < n; k++) {
-      if (!hit(w, b, w.x, w.y + s, w.solid, P.EPS)) { w.y += s; continue; }
-      let lo = 0, hi = s;
-      for (let i = 0; i < 6; i++) {
-        const m = (lo + hi) / 2;
-        if (hit(w, b, w.x, w.y + m, w.solid, P.EPS)) hi = m; else lo = m;
-      }
-      w.y += lo;
-      return true;
-    }
-    return false;
-  }
+  function stepOnce(w, input, dt) {
+    const p = w.p;
+    w.time += dt;
+    if (w.blink > 0) w.blink -= dt;
 
-  function approach(v, target, delta) {
-    if (v < target) return Math.min(target, v + delta);
-    return Math.max(target, v - delta);
-  }
-
-  function step(w, b, input, dt) {
-    if (w.dead || w.won) { w.endT += dt; return; }
-
-    w.stuck = 0; w.blockedX = false;
-    if (hit(w, b, w.x, w.y, w.solid, P.EPS)) {
-      w.stuck = 1;
-      for (let u = 0.1; u <= 3.0; u += 0.1) {
-        if (!hit(w, b, w.x, w.y - u, w.solid, P.EPS)) { w.y -= u; w.vy = 0; w.stuck = 2; break; }
-      }
+    if (w.deadT > 0) {
+      w.deadT -= dt;
+      if (w.deadT <= 0) respawn(w);
+      w.prevJump = !!input.jump;
+      return;
     }
 
-    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-    if (dir) {
-      w.face = dir;
-      w.vx = approach(w.vx, dir * P.SPEED, (w.onGround ? P.ACCEL : P.AIR_ACCEL) * dt);
-    } else {
-      w.vx = approach(w.vx, 0, (w.onGround ? P.FRICTION : 20) * dt);
-    }
+    // por si algo lo dejó metido en un sólido: súbelo
+    for (let i = 0; i < 30 && overlaps(w, w.x, w.y); i++) w.y -= 0.1;
 
-    w.coyote = w.onGround ? P.COYOTE : w.coyote - dt;
-    if (input.jump && !w.prevJump) w.buffer = P.BUFFER; else w.buffer -= dt;
+    // salto: el toque se recuerda un instante
+    if (input.jump && !w.prevJump) w.bufferT = p.buffer;
     w.prevJump = !!input.jump;
-    if (w.buffer > 0 && w.coyote > 0) { w.vy = -P.JUMP_V; w.buffer = 0; w.coyote = 0; w.onGround = false; }
-    if (!input.jump && w.vy < -P.JUMP_V * P.CUT) w.vy = -P.JUMP_V * P.CUT;
+    if (w.bufferT > 0) w.bufferT -= dt;
 
-    w.vy = Math.min(P.MAX_FALL, w.vy + P.GRAVITY * dt);
-
-    moveX(w, b, w.vx * dt);
-    const wasFalling = w.vy > 0;
-    w.onGround = false;
-    if (moveY(w, b, w.vy * dt)) {
-      if (wasFalling) w.onGround = true;
-      w.vy = 0;
+    // horizontal
+    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    if (dir) w.facing = dir;
+    if (dir) {
+      const a = (w.onGround ? p.groundAccel : p.airAccel) * dt;
+      w.vx += Math.max(-a, Math.min(a, dir * p.runSpeed - w.vx));
+    } else {
+      const f = (w.onGround ? p.groundFriction : p.airFriction) * dt;
+      if (Math.abs(w.vx) <= f) w.vx = 0; else w.vx -= Math.sign(w.vx) * f;
     }
 
-    if (w.y > w.fallY) { respawn(w); w.falls++; return; }          // cae al fondo: vuelve al inicio al instante
-    if (hit(w, b, w.x, w.y, w.hazard, 0.2)) { w.dead = true; w.endT = 0; }
-    else if (hit(w, b, w.x, w.y, w.goal, 0.1)) { w.won = true; w.endT = 0; }
+    // tiempo "coyote": un instante de gracia al salir de un borde
+    if (w.onGround) w.coyoteT = p.coyote; else if (w.coyoteT > 0) w.coyoteT -= dt;
+
+    // saltar
+    if (w.bufferT > 0 && w.coyoteT > 0) {
+      w.vy = -w.v0; w.onGround = false; w.coyoteT = 0; w.bufferT = 0; w.jumps++;
+    }
+
+    // gravedad y movimiento
+    w.vy = Math.min(w.vy + p.gravity * dt, p.maxFall);
+    moveX(w, w.vx * dt);
+    moveY(w, w.vy * dt);
+    w.onGround = w.vy >= 0 && overlaps(w, w.x, w.y + 0.06);
+
+    // ¿se salió del nivel (caída)?
+    if (w.y > w.limits.maxY || w.x < w.limits.minX || w.x > w.limits.maxX) {
+      w.deaths++; w.deadT = p.respawnDelay; w.lastEvent = 'fall';
+    }
   }
 
-  const Physics = Object.assign({ createWorld, respawn, step, clearSpawn }, { W: P.W, H: P.H, params: P });
+  // Avanza el juego "dt" segundos reales. input = {left, right, jump} (true/false).
+  function update(w, input, dt) {
+    w.acc += Math.max(0, Math.min(dt, 0.1));
+    let guard = 0;
+    while (w.acc >= DT && guard++ < 14) { w.acc -= DT; stepOnce(w, input, DT); }
+  }
+
+  const Physics = { DEFAULTS, DT, buildMask, createWorld, setMask, update, respawn, overlaps, solidAt };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else root.Physics = Physics;
