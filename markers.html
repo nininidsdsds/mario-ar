@@ -96,13 +96,16 @@
           const box = document.createElement('div');
           box.className = 'mk';
           // el marcador mide "size" cm; el margen blanco de 2 mm va por fuera
-          box.style.width = 'calc(' + size + 'cm + 4mm)';
-          box.style.height = 'calc(' + size + 'cm + 4mm)';
+          // las esquinas del pizarrón van un poco más grandes (3 cm) para verse desde lejos
+          const isCorner = BOARD_CORNER_IDS.includes(parseInt(id, 10));
+          const sz = isCorner ? Math.max(3, parseFloat(size)) : size;
+          box.style.width = 'calc(' + sz + 'cm + 4mm)';
+          box.style.height = 'calc(' + sz + 'cm + 4mm)';
           box.style.boxSizing = 'border-box';
           box.innerHTML = dict.generateSVG(parseInt(id, 10));
           item.appendChild(box);
           const label = document.createElement('div');
-          label.textContent = 'ID ' + id + ' · ' + BLOCKS[id];
+          label.textContent = 'ID ' + id + ' · ' + BLOCKS[id] + (isCorner ? ' · 3 cm' : '');
           item.appendChild(label);
           sheet.appendChild(item);
         }
