@@ -7,10 +7,10 @@ const DICTIONARY_NAME = 'ARUCO_4X4_1000';
 // Solo estos bloques llevan marcador (para no tapar el diseño de los demás).
 // Los bloques normales se reconocen por color (ver calibración en index.html).
 const START_ID = 0;   // bloque de inicio: es el "ancla" que define el sistema de coordenadas
-const GOAL_ID = 1;    // meta
+const GOAL_ID = 7;    // meta
 const BLOCKS = {
   0: 'Inicio (personaje)',
-  1: 'Meta',
+  7: 'Meta',
   4: 'Enemigo A',
   5: 'Enemigo B',
   // Marcadores fijos de las 4 esquinas del pizarrón (modo pizarrón, para fondos con dibujo)
