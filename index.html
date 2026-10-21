@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mario AR - Calibración y mapa</title>
+  <title>Mario AR - Calibración y mapa (v6)</title>
   <style>
     html, body { margin: 0; background: #111; color: #fff; font-family: sans-serif; }
     #top { padding: 8px; text-align: center; }
@@ -82,11 +82,22 @@
     <button id="bJump" class="pb jump">▲</button>
   </div>
 
-  <script src="markers-config.js"></script>
-  <script src="game-core.js"></script>
-  <script src="game-board.js"></script>
-  <script src="game-physics.js"></script>
+  <script src="markers-config.js?v=6"></script>
+  <script src="game-core.js?v=6"></script>
+  <script src="game-board.js?v=6"></script>
+  <script src="game-physics.js?v=6"></script>
   <script>
+    // Versión 6: avisa si faltan archivos en GitHub (por ejemplo game-board.js o game-physics.js)
+    (function () {
+      const falta = [];
+      if (typeof BLOCKS === 'undefined') falta.push('markers-config.js');
+      if (typeof Core === 'undefined') falta.push('game-core.js');
+      if (typeof BoardMode === 'undefined') falta.push('game-board.js');
+      if (typeof Physics === 'undefined') falta.push('game-physics.js');
+      window.__faltan = falta;
+      const h = document.getElementById('hud');
+      if (falta.length && h) h.innerHTML = '<b style="color:#f66">Faltan archivos en GitHub: ' + falta.join(', ') + '</b> (sube todos y recarga)';
+    })();
     // ---------- Carga de la librería ArUco ----------
     function loadScript(urls) {
       return new Promise((resolve, reject) => {
